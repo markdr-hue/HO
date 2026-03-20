@@ -2,8 +2,6 @@
 
 ---
 
-## Not your average HO
-
 **One binary. Describe what you want. Done.**
 
 HO autonomously builds, deploys, and monitors web(sites/apps/games).
