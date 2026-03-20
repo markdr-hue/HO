@@ -1,10 +1,8 @@
 # HO (humans. Out.)
 
-![HO](docs/ho_header.png)
-
 ---
 
-## Not your average HO?
+## Not your average HO
 
 **One binary. Describe what you want. Done.**
 
