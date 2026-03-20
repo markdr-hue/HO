@@ -12,6 +12,9 @@ No Docker. No npm. No database server. No webserver. No build steps. Just run it
 
 Also, your data stays on your server/computer. Nothing gets hosted in the cloud.
 
+![HO Screenshot 1](readme_assets/screen_1.jpg)
+
+![HO Screenshot 2](readme_assets/screen_2.jpg)
 
 ---
 
