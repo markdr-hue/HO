@@ -200,7 +200,7 @@ The admin panel runs on port **5001**. If your server is publicly accessible, bl
 
 ---
 
-## Standing on the Shoulders of Giants
+## Special thanks
 
 HO's seamless hosting and HTTPS experience wouldn't exist without these two incredible projects:
 
