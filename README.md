@@ -1,4 +1,4 @@
-# HO (humans. Out.)
+# HO (Humans. Out.)
 
 ---
 
