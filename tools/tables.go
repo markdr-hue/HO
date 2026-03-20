@@ -244,6 +244,15 @@ func (t *SchemaTool) create(ctx *ToolContext, args map[string]interface{}) (*Res
 		return &Result{Success: false, Error: "table_name and columns are required"}, nil
 	}
 
+	// Skip if table already exists (prevents duplicate creation during BUILD).
+	var existingCount int
+	if err := ctx.DB.QueryRow("SELECT COUNT(*) FROM ho_dynamic_tables WHERE table_name = ?", tableName).Scan(&existingCount); err == nil && existingCount > 0 {
+		return &Result{Success: true, Data: map[string]interface{}{
+			"table_name": tableName,
+			"message":    "Table " + tableName + " already exists — skipping creation.",
+		}}, nil
+	}
+
 	physicalName, err := sanitizedTableName(tableName)
 	if err != nil {
 		return &Result{Success: false, Error: err.Error()}, nil
@@ -254,6 +263,10 @@ func (t *SchemaTool) create(ctx *ToolContext, args map[string]interface{}) (*Res
 	secureCols := map[string]string{}
 
 	for colName, colTypeRaw := range columnsRaw {
+		// Skip reserved columns that are auto-added by the CREATE TABLE template.
+		if strings.EqualFold(colName, "id") || strings.EqualFold(colName, "created_at") {
+			continue
+		}
 		if !validColumnName.MatchString(colName) {
 			return &Result{Success: false, Error: fmt.Sprintf("invalid column name: %s", colName)}, nil
 		}

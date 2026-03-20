@@ -363,7 +363,7 @@ func (w *PipelineWorker) runBuild(ctx context.Context) (PipelineStage, error) {
 	cfg := StageConfigs[StageBuild]
 	dynTools := buildToolSetForPlan(plan)
 	toolGuide := cfg.BuildGuide(w.deps.ToolRegistry, dynTools)
-	prompt := buildBuildPrompt(plan, site, w.ownerName(), existingManifest, toolGuide)
+	prompt := buildBuildPrompt(plan, site, w.ownerName(), existingManifest, toolGuide, nil)
 
 	// Include the full plan JSON in the first user message (not the system prompt)
 	// so it gets naturally pruned from conversation history after early iterations.
@@ -407,17 +407,23 @@ func (w *PipelineWorker) runBuild(ctx context.Context) (PipelineStage, error) {
 		messages = []llm.Message{{Role: llm.RoleUser, Content: userMsg}}
 	}
 
-	// Set up system prompt compaction: once infrastructure (tables, endpoints,
-	// seed data) is done and we're building pages, drop the Build Guide section
+	// Regenerate the system prompt with current progress on each LLM call.
+	// Completed items are marked [DONE] in the checklist so the LLM skips them.
+	// Once infrastructure (tables, endpoints) is done, also compact the Build Guide
 	// to save ~1,600 tokens per call.
 	var promptCompacted bool
 	ownerName := w.ownerName()
 	w.systemPromptUpdater = func(current string) string {
-		if !promptCompacted && w.buildProgress != nil && w.buildProgress.infrastructureComplete() {
-			promptCompacted = true
-			return buildBuildPrompt(plan, site, ownerName, "", toolGuide, true)
+		if w.buildProgress == nil {
+			return current
 		}
-		return current
+		if !promptCompacted && w.buildProgress.infrastructureComplete() {
+			promptCompacted = true
+		}
+		if promptCompacted {
+			return buildBuildPrompt(plan, site, ownerName, "", toolGuide, w.buildProgress, true)
+		}
+		return buildBuildPrompt(plan, site, ownerName, "", toolGuide, w.buildProgress)
 	}
 
 	toolDefs := cfg.BuildToolDefs(w.deps.ToolRegistry, dynTools)

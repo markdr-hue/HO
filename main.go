@@ -74,9 +74,7 @@ func printBanner(cfg *config.Config) {
    Discord   : https://discord.gg/VRdYgDQ2qr
    X/Twitter : https://x.com/humans_out_mark
 
-   Special thanks to https://caddyserver.com & https://letsencrypt.org
-
-   Stop using OpenAI, for obvious reasons.%s
+   Special thanks to https://caddyserver.com & https://letsencrypt.org%s
 
 `, cyan, reset, reset, reset, dim, Version, reset,
 		green, reset, adminURL,

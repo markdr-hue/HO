@@ -282,6 +282,15 @@ func (t *EndpointsTool) createAPI(ctx *ToolContext, args map[string]interface{})
 		return &Result{Success: false, Error: fmt.Sprintf("dynamic table '%s' does not exist — create it first with manage_schema", tableName)}, nil
 	}
 
+	// Skip if endpoint already exists (prevents duplicate creation during BUILD).
+	var existingCount int
+	if err := ctx.DB.QueryRow("SELECT COUNT(*) FROM ho_api_endpoints WHERE path = ?", path).Scan(&existingCount); err == nil && existingCount > 0 {
+		return &Result{Success: true, Data: map[string]interface{}{
+			"path":    path,
+			"message": "Endpoint /api/" + path + " already exists — skipping creation.",
+		}}, nil
+	}
+
 	// Parse methods — default to full CRUD since endpoints are table-bound.
 	methods := []string{"GET", "POST", "PUT", "DELETE"}
 	if methodsRaw, ok := args["methods"].([]interface{}); ok && len(methodsRaw) > 0 {
@@ -520,6 +529,15 @@ func (t *EndpointsTool) createAuth(ctx *ToolContext, args map[string]interface{}
 
 	if tableName == "" || path == "" || usernameCol == "" {
 		return &Result{Success: false, Error: "table_name, path, and username_column are required"}, nil
+	}
+
+	// Skip if auth endpoint already exists (prevents duplicate creation during BUILD).
+	var existingCount int
+	if err := ctx.DB.QueryRow("SELECT COUNT(*) FROM ho_auth_endpoints WHERE path = ?", path).Scan(&existingCount); err == nil && existingCount > 0 {
+		return &Result{Success: true, Data: map[string]interface{}{
+			"path":    path,
+			"message": "Auth endpoint /api/" + path + " already exists — skipping creation.",
+		}}, nil
 	}
 
 	// Validate column names to prevent SQL injection.
@@ -766,6 +784,15 @@ func (t *EndpointsTool) createUpload(ctx *ToolContext, args map[string]interface
 		return &Result{Success: false, Error: "path is required"}, nil
 	}
 
+	// Skip if upload endpoint already exists (prevents duplicate creation during BUILD).
+	var existingCount int
+	if err := ctx.DB.QueryRow("SELECT COUNT(*) FROM ho_upload_endpoints WHERE path = ?", path).Scan(&existingCount); err == nil && existingCount > 0 {
+		return &Result{Success: true, Data: map[string]interface{}{
+			"path":    path,
+			"message": "Upload endpoint /api/" + path + " already exists — skipping creation.",
+		}}, nil
+	}
+
 	// Parse allowed_types (default: image/*, application/pdf).
 	allowedTypes := []string{"image/*", "application/pdf"}
 	if typesRaw, ok := args["allowed_types"].([]interface{}); ok && len(typesRaw) > 0 {
@@ -825,6 +852,15 @@ func (t *EndpointsTool) createStream(ctx *ToolContext, args map[string]interface
 		return &Result{Success: false, Error: "path is required"}, nil
 	}
 
+	// Skip if stream endpoint already exists (prevents duplicate creation during BUILD).
+	var existingCount int
+	if err := ctx.DB.QueryRow("SELECT COUNT(*) FROM ho_stream_endpoints WHERE path = ?", path).Scan(&existingCount); err == nil && existingCount > 0 {
+		return &Result{Success: true, Data: map[string]interface{}{
+			"path":    path,
+			"message": "Stream endpoint /api/" + path + " already exists — skipping creation.",
+		}}, nil
+	}
+
 	// Parse event_types (default: all data events).
 	eventTypes := []string{"data.insert", "data.update", "data.delete"}
 	if typesRaw, ok := args["event_types"].([]interface{}); ok && len(typesRaw) > 0 {
@@ -871,6 +907,15 @@ func (t *EndpointsTool) createWebSocket(ctx *ToolContext, args map[string]interf
 	path, _ := args["path"].(string)
 	if path == "" {
 		return &Result{Success: false, Error: "path is required"}, nil
+	}
+
+	// Skip if WebSocket endpoint already exists (prevents duplicate creation during BUILD).
+	var existingCount int
+	if err := ctx.DB.QueryRow("SELECT COUNT(*) FROM ho_ws_endpoints WHERE path = ?", path).Scan(&existingCount); err == nil && existingCount > 0 {
+		return &Result{Success: true, Data: map[string]interface{}{
+			"path":    path,
+			"message": "WebSocket endpoint /api/" + path + " already exists — skipping creation.",
+		}}, nil
 	}
 
 	writeToTable := ""
@@ -975,6 +1020,15 @@ func (t *EndpointsTool) createOAuth(ctx *ToolContext, args map[string]interface{
 	usernameField := "email"
 	if uf, ok := args["username_field"].(string); ok && uf != "" {
 		usernameField = uf
+	}
+
+	// Skip if OAuth provider already exists (prevents duplicate creation during BUILD).
+	var oauthExists int
+	if err := ctx.DB.QueryRow("SELECT COUNT(*) FROM ho_oauth_providers WHERE name = ?", providerName).Scan(&oauthExists); err == nil && oauthExists > 0 {
+		return &Result{Success: true, Data: map[string]interface{}{
+			"provider": providerName,
+			"message":  "OAuth provider " + providerName + " already exists — skipping creation.",
+		}}, nil
 	}
 
 	// Verify the auth endpoint exists.
@@ -1912,6 +1966,15 @@ func (t *EndpointsTool) createLLM(ctx *ToolContext, args map[string]interface{})
 	path, _ := args["path"].(string)
 	if path == "" {
 		return &Result{Success: false, Error: "path is required"}, nil
+	}
+
+	// Skip if LLM endpoint already exists (prevents duplicate creation during BUILD).
+	var existingCount int
+	if err := ctx.DB.QueryRow("SELECT COUNT(*) FROM ho_llm_endpoints WHERE path = ?", path).Scan(&existingCount); err == nil && existingCount > 0 {
+		return &Result{Success: true, Data: map[string]interface{}{
+			"path":    path,
+			"message": "LLM endpoint /api/" + path + " already exists — skipping creation.",
+		}}, nil
 	}
 
 	systemPrompt, _ := args["system_prompt"].(string)

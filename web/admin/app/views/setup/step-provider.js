@@ -16,8 +16,7 @@ import { icon } from '../../ui/icon.js';
 import * as toast from '../../ui/toast.js';
 
 const API_KEY_HINTS = {
-  anthropic: 'Get your key at console.anthropic.com',
-  openai: 'Get your key at platform.openai.com/api-keys',
+  anthropic: 'Get your key at console.anthropic.com'
 };
 
 export async function renderProvider(container, setupData, onNext) {

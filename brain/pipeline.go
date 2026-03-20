@@ -791,6 +791,19 @@ type toolCallResult struct {
 	toolErr error
 }
 
+// toolResultSucceeded returns true only when the tool executed without a Go-level
+// error AND the JSON result indicates success. Tools return business-logic failures
+// via Result{Success: false} with a nil Go error — those must NOT be treated as
+// successful for progress tracking, messaging, or anchor injection.
+func (r *toolCallResult) toolResultSucceeded() bool {
+	if r.toolErr != nil {
+		return false
+	}
+	// Quick JSON check — all tool results are marshaled Result structs where
+	// "success":false appears near the start of the string.
+	return !strings.Contains(r.result, `"success":false`)
+}
+
 // executeToolCalls runs tool calls and appends results to messages.
 // When multiple tool calls are present, they execute concurrently (up to 4 at a time)
 // with results collected in the original order for deterministic message history.
@@ -926,13 +939,13 @@ func (w *PipelineWorker) executeToolCalls(ctx context.Context, toolCalls []llm.T
 			w.deps.Bus.Publish(events.NewEvent(events.EventBrainToolResult, w.siteID, resultPayload))
 		}
 
-		if r.toolErr == nil {
+		if r.toolResultSucceeded() {
 			if msg := toolProgressMessage(r.tc.Name, r.args); msg != "" {
 				w.publishBrainMessage(msg)
 			}
 		}
 
-		if r.toolErr == nil && w.buildProgress != nil {
+		if r.toolResultSucceeded() && w.buildProgress != nil {
 			w.buildProgress.trackToolResult(r.tc.Name, r.args)
 			if w.buildProgress.toolCallsSeen%5 == 0 && w.deps.Bus != nil {
 				w.deps.Bus.Publish(events.NewEvent(events.EventBrainProgress, w.siteID, w.buildProgress.toPayload()))
@@ -945,7 +958,7 @@ func (w *PipelineWorker) executeToolCalls(ctx context.Context, toolCalls []llm.T
 			}
 		}
 
-		if r.toolErr == nil {
+		if r.toolResultSucceeded() {
 			messages = w.injectAnchors(r.tc.Name, r.args, messages)
 		}
 	}

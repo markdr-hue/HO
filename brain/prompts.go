@@ -208,17 +208,27 @@ func buildPlanPrompt(site *models.Site, ownerName, answers, capabilitiesRef stri
 
 // buildOrderChecklist computes a deterministic build order from the Plan.
 // Tables → Endpoints → Seed Data → Layout → CSS → Shared JS → Pages. Pure Go, zero LLM tokens.
-func buildOrderChecklist(plan *Plan) string {
+// When progress is non-nil, completed items are marked [DONE] so the LLM skips them.
+func buildOrderChecklist(plan *Plan, progress *buildProgressTracker) string {
 	var b strings.Builder
 	b.WriteString("## Recommended Build Order (tables before endpoints, layout before CSS so header/footer styles are included, CSS before pages — but you may reorder if you have a good reason)\n")
 	step := 1
 
 	for _, t := range plan.Tables {
-		b.WriteString(fmt.Sprintf("%d. Create table: %s\n", step, t.Name))
+		if progress != nil && progress.tablesDone[t.Name] {
+			b.WriteString(fmt.Sprintf("%d. [DONE] Create table: %s (already created — skip)\n", step, t.Name))
+		} else {
+			b.WriteString(fmt.Sprintf("%d. Create table: %s\n", step, t.Name))
+		}
 		step++
 	}
 	for _, ep := range plan.Endpoints {
-		entry := fmt.Sprintf("%d. Create endpoint: %s %s", step, ep.Action, ep.Path)
+		done := progress != nil && progress.endpointsDone[ep.Action+":"+ep.Path]
+		entry := fmt.Sprintf("%d. ", step)
+		if done {
+			entry += "[DONE] "
+		}
+		entry += fmt.Sprintf("Create endpoint: %s %s", ep.Action, ep.Path)
 		if ep.TableName != "" {
 			entry += fmt.Sprintf(" (table: %s)", ep.TableName)
 		}
@@ -228,6 +238,9 @@ func buildOrderChecklist(plan *Plan) string {
 			} else {
 				entry += " (use /chat — streaming chatbot/assistant)"
 			}
+		}
+		if done {
+			entry += " (already created — skip)"
 		}
 		b.WriteString(entry + "\n")
 		step++
@@ -396,7 +409,7 @@ func buildLayoutInstructions(plan *Plan) string {
 // buildBuildPrompt creates the prompt for the single unified BUILD session.
 // When compact is true, the Build Guide section is omitted (used after infrastructure
 // phase is done and only pages remain — saves ~1,600 tokens per call).
-func buildBuildPrompt(plan *Plan, site *models.Site, ownerName, existingManifest, toolGuide string, compact ...bool) string {
+func buildBuildPrompt(plan *Plan, site *models.Site, ownerName, existingManifest, toolGuide string, progress *buildProgressTracker, compact ...bool) string {
 	isCompact := len(compact) > 0 && compact[0]
 	var b strings.Builder
 	header, footer := layoutHeaderFooter(plan)
@@ -425,7 +438,7 @@ func buildBuildPrompt(plan *Plan, site *models.Site, ownerName, existingManifest
 	if isMinimal {
 		b.WriteString("## Build Order\nBuild the CSS, layout, and pages in whatever order makes sense for this small project.\n\n")
 	} else {
-		b.WriteString(buildOrderChecklist(plan))
+		b.WriteString(buildOrderChecklist(plan, progress))
 	}
 
 	// Inject design thesis to re-anchor aesthetics at a high-attention point.
