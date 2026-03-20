@@ -1,0 +1,10 @@
+{
+  "admin_port": 5001,
+  "public_port": 5000,
+  "data_dir": "./data",
+  "log_level": "info",
+  "caddy_enabled": false,
+  "cors_origins": [],
+  "rate_limit_rate": 100,
+  "rate_limit_burst": 200
+}
