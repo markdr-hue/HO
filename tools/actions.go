@@ -32,7 +32,7 @@ Actions are event-driven hooks that run automatically at runtime without the LLM
 Use them for things like sending a welcome email on user registration, logging to an audit table on data changes, or calling an external webhook on payment completion.
 
 - **create**: Set name, event_type, action_type, and action_config. Optional event_filter to narrow matches.
-  - action_type: send_email, http_request, insert_data, update_data.
+  - action_type: send_email, http_request, insert_data, update_data, trigger_webhook.
   - action_config: JSON with {{template}} variables resolved from the event payload at runtime.
   - event_filter: JSON object — all keys must match the event payload (e.g. {"table":"users"}).
 - **list**: List all actions.
@@ -40,7 +40,14 @@ Use them for things like sending a welcome email on user registration, logging t
 - **delete**: Remove an action by name.
 - **test**: Dry-run — shows the resolved config for a given event payload without executing.
 
-Event types: auth.register, auth.login, data.insert, data.update, data.delete, payment.completed, webhook.received.
+Event types: auth.register, auth.login, data.insert, data.update, data.delete, payment.completed, webhook.received, scheduled.* (from scheduler trigger_event).
+
+trigger_webhook example — notify Slack on new order:
+  manage_actions(action="create", name="notify-slack-order", event_type="data.insert",
+    event_filter={"table":"orders"},
+    action_type="trigger_webhook",
+    action_config={"webhook_name":"slack-notify", "payload":{"text":"New order from {{customer_name}}"}})
+
 
 Example — welcome email on registration:
   manage_actions(action="create", name="welcome_email", event_type="auth.register",

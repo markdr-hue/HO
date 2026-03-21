@@ -101,7 +101,7 @@ const planJSONSchema = `### JSON Shape
     {"name": "table_name", "purpose": "what it stores", "columns": [{"name": "col", "type": "TEXT|INTEGER|REAL|BOOLEAN|PASSWORD|ENCRYPTED", "required": true}], "searchable_columns": ["col"], "seed_data": [{"col": "example1"}, {"col": "example2"}]}
   ],
   "endpoints": [
-    {"action": "create_api|create_auth|create_websocket|create_stream|create_upload|create_llm", "path": "resource", "table_name": "table_name", "streaming": true, ...}
+    {"action": "create_api|create_auth|create_websocket|create_stream|create_upload|create_llm", "path": "resource", "table_name": "table_name", "streaming": true, "owner_column": "user_id (optional: scopes data per user)", ...}
   ],
   "pages": [
     {"path": "/", "title": "Home", "purpose": "what this page does", "sections": [
@@ -139,16 +139,18 @@ When the site requires an external service (Stripe, SendGrid, OpenAI, etc.), use
 
 ## Guidelines
 - sections: describe what each section does (name and purpose). The BUILD stage decides layout and visual structure — keep sections focused on content intent, not visual prescriptions.
-- Do NOT include id or created_at columns — they are auto-added. Note: there is NO auto-added updated_at column. If you need one, add it explicitly.
+- Do NOT include id or created_at in column definitions — they are auto-added and always available for sorting/filtering. Note: there is NO auto-added updated_at column. If you need one, add it explicitly.
 - All internal tables use the ho_ prefix (e.g. ho_pages, ho_files). Do not create tables starting with ho_. If your app needs a table with one of these names, prefix it (e.g. user_files, app_assets, site_pages).
 - auth_strategy: "jwt" for server-side login/register, "localStorage-only" for client-side preferences, "none" for no identity.
 - create_llm endpoints: for AI-powered features (chatbots, assistants, content generators). Provide system_prompt to define the AI's role. Creates POST /api/{path}/chat (SSE streaming) and POST /api/{path}/complete (JSON response {content, model, usage, stop_reason}). Set "streaming": true (default) for chatbots/assistants that benefit from real-time token display, or "streaming": false for one-shot generators/classifiers where the full response is needed at once. SSE format: event "token" with data {"text":"chunk"}, event "done" with data {}. Frontend must use parsed.text (NOT parsed.content). When streaming is false, page JS should POST to /api/{path}/complete and read the JSON response. **max_tokens guidance**: default is 4096. For LLM endpoints that generate code (HTML/CSS/JS, games, components), set max_tokens to 8192 or higher — code generation routinely needs 4000-8000+ tokens. For simple text/chat, 2048-4096 is fine. Frontend should check response.stop_reason — if "max_tokens", the response was truncated. Optional: max_tokens, temperature, max_history, rate_limit, requires_auth.
+- create_upload endpoints: set path="resource" to create POST /api/{resource}/upload. In page endpoint references, use "POST /api/{resource}/upload" (upload comes AFTER the resource name). Default allowed types include image/*, text/*, PDF, JSON, ZIP. Specify allowed_types to restrict or expand (e.g. ["text/csv", "application/json"]).
 - Every table that pages read/write via fetch() needs a create_api endpoint. LLM endpoints (create_llm) only serve /chat and /complete sub-routes — they do NOT provide CRUD (GET list, GET by id, POST, PUT, DELETE). If a page needs standard REST operations on a resource, you MUST include a separate create_api endpoint for that table in addition to any create_llm endpoint.
 - Let the content and audience drive the aesthetic, layout, and page structure.
+- Row-level security: set owner_column on create_api endpoints (e.g. "owner_column": "user_id") to scope data per authenticated user. GET returns only owned rows, POST auto-sets the column, PUT/DELETE affect only owned rows. Admin role bypasses the filter. Use for multi-user apps (dashboards, marketplaces, social platforms).
 - Match complexity to the request. Do NOT add authentication unless the user explicitly asks for accounts, login, or multi-user features. Do NOT add extra pages unless the user's description implies them. When in doubt, build less — the owner can always ask for more via chat.
 - **Architecture guide**: "spa" = single HTML page with client-side routing in JS (use history.pushState). "single-page" = one page, no routing (games, tools, visualizations). "multi-page" = separate HTML pages served by the platform. "hybrid" = mix of server-rendered and SPA sections. Choose based on the app's nature, not a default.
 - pages.notes: actionable build instructions — API calls, state management, key interactions.
-- seed_data: a few example rows showing data shape only. The BUILD stage auto-expands with realistic rows — keep seed_data minimal to save tokens.
+- seed_data: a few example rows showing data shape only — keep minimal to save tokens. The BUILD stage decides whether to expand with realistic data or skip seeding (e.g. for user-generated tables like messages or orders).
 - actions: server-side hooks that fire on events without the LLM (e.g. send welcome email on registration, log to audit table on data changes). Only include if the user explicitly requests event-driven behavior or it's clearly implied (e.g. "email confirmation on signup"). Do NOT add actions by default.
   - update_data actions require: table (string), set (object), where (object). For counters use {"$increment":1} or {"$decrement":1} as the value. Event payload includes all request body fields — use {{field_name}} templates.
 
@@ -264,7 +266,16 @@ func buildOrderChecklist(plan *Plan, progress *buildProgressTracker) string {
 	}
 	b.WriteString(fmt.Sprintf("%d. %s\n", step, layoutDesc))
 	step++
-	b.WriteString(fmt.Sprintf("%d. Create global CSS (include .site-header and .site-footer styles to match the layout template)\n", step))
+	switch {
+	case header == "none" && footer == "none":
+		b.WriteString(fmt.Sprintf("%d. Create global CSS (full-viewport layout — no .site-header or .site-footer needed)\n", step))
+	case header == "none":
+		b.WriteString(fmt.Sprintf("%d. Create global CSS (include .site-footer styles — no .site-header needed)\n", step))
+	case footer == "none":
+		b.WriteString(fmt.Sprintf("%d. Create global CSS (include .site-header styles — no .site-footer needed)\n", step))
+	default:
+		b.WriteString(fmt.Sprintf("%d. Create global CSS (include .site-header and .site-footer styles to match the layout template)\n", step))
+	}
 	step++
 	// Only include shared JS step if there are endpoints or auth (otherwise nothing to share).
 	if len(plan.Endpoints) > 0 || plan.AuthStrategy != "" {
@@ -397,6 +408,27 @@ func buildLayoutInstructions(plan *Plan) string {
 		b.WriteString("```\n")
 		b.WriteString("Always use semantic `<header>` and `<footer>` tags for the site header and footer — not plain `<div>` wrappers.\n")
 		b.WriteString("The header/footer must feel like a natural part of the design: use the same design tokens, typography, and spacing as the rest of the app.\n")
+		// Inject concrete design values so the LLM has actual colors/fonts when building the layout
+		// (layout is created before CSS, so without this the header ends up looking generic).
+		if plan.DesignSystem != nil {
+			b.WriteString("\nDesign context for the header/footer:\n")
+			if bg := plan.DesignSystem.Colors["bg"]; bg != "" {
+				b.WriteString(fmt.Sprintf("- Colors: primary=%s, bg=%s, text=%s, surface=%s\n",
+					plan.DesignSystem.Colors["primary"],
+					bg,
+					plan.DesignSystem.Colors["text"],
+					plan.DesignSystem.Colors["surface"]))
+			}
+			if plan.DesignSystem.Typography != nil && plan.DesignSystem.Typography.HeadingFont != "" {
+				b.WriteString(fmt.Sprintf("- Fonts: %s (headings), %s (body)\n",
+					plan.DesignSystem.Typography.HeadingFont,
+					plan.DesignSystem.Typography.BodyFont))
+			}
+			if plan.DesignSystem.DesignIntent != "" {
+				b.WriteString(fmt.Sprintf("- Design intent: %s\n", plan.DesignSystem.DesignIntent))
+			}
+			b.WriteString("Use inline styles or class names that align with these values. The CSS file (created next) will define the custom properties — the header should already look intentional, not generic.\n")
+		}
 	}
 
 	b.WriteString("- Custom fonts: add Google Fonts <link> tags to head_content with &display=swap.\n")
@@ -417,9 +449,9 @@ func buildBuildPrompt(plan *Plan, site *models.Site, ownerName, existingManifest
 	// Scale-aware opening: don't mention tables/endpoints/design system for tiny sites.
 	isMinimal := len(plan.Tables) == 0 && len(plan.Endpoints) == 0 && len(plan.Pages) <= 2
 	if isMinimal {
-		b.WriteString("You are HO. Build this site in one session. It's a small project — keep CSS minimal (only styles actually used), skip component utility classes you won't need. Build exactly what the plan specifies, nothing more. Use the recommended build order below as a guide. When everything is built, stop calling tools.\n\n")
+		b.WriteString("You are HO. Build this site in one session. It's a small project — keep CSS minimal (only styles actually used), skip component utility classes you won't need. Build exactly what the plan specifies, nothing more. Use the recommended build order below as a guide.\n\n")
 	} else {
-		b.WriteString("You are HO. Build this complete site in one session: database tables, API endpoints, CSS design system, page layout, and all pages. Build what the plan specifies — no extra pages, tables, or endpoints beyond the plan. You MAY add supporting UI elements (modals, toasts, loading states, empty states, utility classes) that serve planned features — but do not add new pages, data tables, or user-facing features beyond the plan. Creative expression goes into *how* you build it (design, interactions, copy, component choices), not *what* you build. Use the recommended build order below as a guide. When everything is built, stop calling tools.\n\n")
+		b.WriteString("You are HO. Build this complete site in one session: database tables, API endpoints, CSS design system, page layout, and all pages. Build what the plan specifies — no extra pages, tables, or endpoints beyond the plan. You MAY add supporting UI elements (modals, toasts, loading states, empty states, utility classes) that serve planned features — but do not add new pages, data tables, or user-facing features beyond the plan. Creative expression goes into *how* you build it (design, interactions, copy, component choices), not *what* you build. Use the recommended build order below as a guide.\n\n")
 	}
 
 	siteDesc := ""
@@ -447,10 +479,6 @@ func buildBuildPrompt(plan *Plan, site *models.Site, ownerName, existingManifest
 		if plan.DesignSystem != nil && plan.DesignSystem.DesignIntent != "" {
 			b.WriteString(fmt.Sprintf("\n\nDesign intent: %s", plan.DesignSystem.DesignIntent))
 		}
-		// Reinforce chromeless decision at this high-attention point.
-		if header == "none" && footer == "none" {
-			b.WriteString("\n\nThis app is chromeless — no header, no footer, no navbar. Pages are full-viewport immersive experiences. Do not add any navigation chrome.")
-		}
 		b.WriteString("\nLet this personality inform every page — avoid generic card-grid layouts unless they match the app's purpose.\n\n")
 	}
 
@@ -476,22 +504,15 @@ func buildBuildPrompt(plan *Plan, site *models.Site, ownerName, existingManifest
 	// Quality Bar placed in the recency zone — right before build instructions
 	// so it's fresh when the LLM starts building.
 	chromeless := header == "none" && footer == "none"
-	b.WriteString("## Quality Bar (non-negotiable)\n")
-	b.WriteString("- Every interactive element works — buttons trigger actions, forms submit, links navigate.\n")
+	b.WriteString("## Quality Bar\n")
 	if chromeless {
-		b.WriteString("- Clear visual design that matches the personality and purpose of this app.\n")
+		b.WriteString("- Clear visual design matching this app's personality. Interactive elements have hover/focus/active states.\n")
+		b.WriteString("- Chromeless/fullscreen app — responsive breakpoints optional. Prioritize the intended viewport.\n")
 	} else {
-		b.WriteString("- Every page has clear visual hierarchy: one primary action, organized sections, readable typography.\n")
-	}
-	b.WriteString("- Interactive elements have visible hover, focus, and active states.\n")
-	b.WriteString("- Cohesive design that matches the personality of this app.\n")
-	if chromeless {
-		b.WriteString("- This is a chromeless/fullscreen app — responsive breakpoints are optional. Prioritize the intended viewport experience.\n")
-	} else {
+		b.WriteString("- Clear visual hierarchy with cohesive design matching this app's personality. Interactive elements have hover/focus/active states.\n")
 		b.WriteString("- Responsive: layouts must work across mobile and desktop viewports.\n")
 	}
-	b.WriteString("- Use var(--color-*) from design tokens for primary colors. Hardcoded hex is fine for gradients, shadows, SVG fills, and one-off accents that don't map to a token.\n")
-	b.WriteString("- No placeholder text or TODO comments in shipped code. Keep console.logs minimal (error handlers only).\n\n")
+	b.WriteString("- No placeholder text or TODO comments. Minimal console.logs (error handlers only).\n\n")
 
 	if !isCompact {
 		b.WriteString("## Build Guide\n\n")
@@ -525,7 +546,7 @@ Design the CSS to match the personality of this specific app — a recipe site s
 		} else {
 			b.WriteString("Use a consistent max-width container pattern for content alignment across header, footer, and page sections.\n")
 			if header != "none" || footer != "none" {
-				b.WriteString("Style .site-header and/or .site-footer to match the layout template. Define a --header-height custom property for layout offset calculations. The header/footer must feel integrated with the design — use design tokens, not a generic disconnected bar.\n")
+				b.WriteString("Style .site-header/.site-footer using design token custom properties. Define --header-height for layout offset calculations.\n")
 			}
 		}
 		b.WriteString(buildLayoutInstructions(plan))
@@ -542,7 +563,7 @@ You may add libraries during BUILD even if not listed in the plan — use your j
 		// Page chrome instructions depend on whether layout provides header/footer.
 		var pageChrome string
 		if chromeless {
-			pageChrome = "- This app has no layout header/footer. Pages render full-viewport. You MAY include <nav> or <header> elements within page content if a specific page needs inline navigation."
+			pageChrome = "- This app is chromeless — no layout header/footer. Pages render full-viewport. Do NOT add <header>, <nav>, or <footer> elements in page content unless the page spec explicitly requires inline navigation."
 		} else {
 			pageChrome = "- Page content replaces {{content}} in the layout template. Do NOT add <header>, <nav>, or <footer> — the template provides these."
 		}
@@ -576,22 +597,8 @@ For each page: (a) if needed, patch the global CSS file to add page-specific cla
 - Auth: store JWT in localStorage key 'auth_token'. Header: Authorization: 'Bearer ' + token.
 - Auth: set path="auth" in create_auth endpoint. This creates /api/auth/register, /api/auth/login, /api/auth/me.
 - **Auth field names**: The register/login body must use the EXACT column names from the auth endpoint config. If username_column="email", send {"email": "...", "password": "..."} — NOT {"username": "..."}. The server matches field names to column names.
-- **API response shapes**: GET /api/{path} -> {data:[...], count, limit, offset}. GET /api/{path}/123 -> single row object. POST -> full created row object (includes id and all fields). PUT /api/{path}/123 -> full updated row object. DELETE /api/{path}/123 -> {success:true}. Auth: POST /api/{path}/login -> {token}. GET /api/{path}/me -> user object. LLM: POST /api/{path}/complete -> {content, model, usage:{input_tokens, output_tokens}}.
-- **LLM endpoints provide two routes** — choose based on the use case:
-  **Streaming (/chat)** — for chatbots, assistants, conversational UIs where tokens appear in real time:
-  POST /api/{path}/chat with body {messages:[{role:"user",content:"..."}]}. Response is SSE:
-  event: token — data is {"text":"chunk"} (use parsed.text, NOT parsed.content)
-  event: done — data is {} (streaming finished)
-  event: error — data is {"error":"message"}
-  Parse: fetch with POST, read via getReader(), split by '\n', parse 'data: ' lines as JSON, append parsed.text.
-  **Non-streaming (/complete)** — for content generators, code generators, classifiers, or any use case where you need the full response before acting on it:
-  POST /api/{path}/complete with body {messages:[{role:"user",content:"..."}]}. Response is JSON:
-  {content: "...", model: "...", stop_reason: "end"|"max_tokens", usage: {input_tokens, output_tokens}}
-  Use response.content (NOT .text). Check stop_reason — "max_tokens" means the output was truncated.
-  For generated HTML/code: use innerHTML or equivalent to render the content. For generated data: JSON.parse(response.content) if the system_prompt asks for JSON output.
-- **API filtering**: use query params, NOT JSON filter objects. Examples: ?status=active, ?name__like=search, ?price__gt=10, ?q=term. Supported suffixes: __like, __gt, __gte, __lt, __lte, __ne. The filters=[{...}] syntax is for tools only, never for frontend.
-- **Column selection**: ?fields=col1,col2 to fetch only needed columns.
-- **Sorting**: ?sort=column&order=asc|desc (aliases: ?order_by=column&direction=asc|desc). Only sort by columns that exist — tables auto-add "id" and "created_at" (NOT "updated_at"). To sort by newest, use ?sort=created_at&order=desc or ?sort=id&order=desc. Do NOT use "order_direction" — the correct param names are "order" or "direction".
+- **API patterns**: See the manage_endpoints guide above for response shapes, auth headers, and frontend fetch patterns. Filtering: ?col=val, ?col__like=, ?col__gt=, ?q=term. Sorting: ?sort=col&order=asc|desc. Column selection: ?fields=col1,col2. The filters=[{...}] syntax is for tools only, never for frontend. Only sort by columns that exist — tables auto-add "id" and "created_at" (NOT "updated_at"). Do NOT use "order_direction" — the correct param names are "order" or "direction".
+- **LLM endpoints**: POST /api/{path}/chat for SSE streaming (parse event "token" → data.text, NOT data.content), POST /api/{path}/complete for full JSON response (use response.content, NOT .text). Check stop_reason — "max_tokens" means truncated. For generated HTML: use innerHTML. For generated data: JSON.parse(response.content).
 
 `, pageChrome))
 			b.WriteString(platformRules)

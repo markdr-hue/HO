@@ -10,6 +10,7 @@
 
 import { h } from '../../core/dom.js';
 import { post } from '../../core/http.js';
+import * as state from '../../core/state.js';
 import { icon } from '../icon.js';
 import * as toast from '../toast.js';
 import { buildQuestionInput } from '../question-input.js';
@@ -220,6 +221,10 @@ async function submitAnswer(questionId, answer, cardEl) {
   try {
     await post(`/admin/api/questions/${questionId}/answer`, { answer });
 
+    // Decrement badge count for this single answered question
+    const pending = Math.max(0, (state.get('pendingQuestions') || 0) - 1);
+    state.set('pendingQuestions', pending);
+
     // Transform card to answered state
     cardEl.innerHTML = '';
     cardEl.className = 'chat-card chat-card--question chat-card--answered';
@@ -341,9 +346,29 @@ export function createQuestionGroup(questions) {
     submitBtn.textContent = 'Submitting...';
 
     try {
+      let succeeded = 0;
+      let failed = 0;
       for (const { questionId, answer } of answers) {
-        await post(`/admin/api/questions/${questionId}/answer`, { answer });
+        try {
+          await post(`/admin/api/questions/${questionId}/answer`, { answer });
+          succeeded++;
+        } catch (err) {
+          failed++;
+          console.error(`Failed to submit answer for question ${questionId}:`, err);
+        }
       }
+
+      if (failed > 0) {
+        toast.error(`${failed} answer(s) failed to submit`);
+        if (succeeded === 0) {
+          submitBtn.disabled = false;
+          submitBtn.textContent = 'Submit All';
+          return;
+        }
+      }
+
+      // Clear badge — all questions submitted (or at least attempted)
+      state.set('pendingQuestions', Math.max(0, (state.get('pendingQuestions') || 0) - succeeded));
 
       // Transform to answered state
       card.className = 'chat-card chat-card--question-group chat-card--answered';

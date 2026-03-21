@@ -137,14 +137,15 @@ var (
 	// missing items after BUILD. Excludes destructive/broad tools to prevent
 	// the LLM from rewriting things that already work.
 	validateToolSet = map[string]bool{
-		"manage_pages":     true,
-		"manage_files":     true,
-		"manage_layout":    true,
-		"manage_schema":    true,
+		"manage_pages":   true,
+		"manage_files":   true,
+		"manage_layout":  true,
+		"manage_schema":  true,
 		"manage_endpoints": true,
-		"manage_data":      true,
-		"manage_search":    true,
-		"manage_seo":       true,
+		"manage_data":    true,
+		"manage_search":  true,
+		"manage_seo":     true,
+		"manage_testing": true,
 	}
 )
 

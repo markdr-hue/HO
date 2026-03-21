@@ -9,7 +9,7 @@
  */
 
 import { h, clear } from '../../core/dom.js';
-import { get, post, put, del } from '../../core/http.js';
+import { get, post, put, del, getToken } from '../../core/http.js';
 import { icon } from '../../ui/icon.js';
 import * as toast from '../../ui/toast.js';
 import * as modal from '../../ui/modal.js';
@@ -86,10 +86,40 @@ async function showTableRows(container, table, siteId) {
 
   const headerRow = h('div', { className: 'flex items-center justify-between mb-3' }, [
     h('h4', {}, table.table_name),
-    h('button', {
-      className: 'btn btn--primary btn--sm',
-      onClick: () => showAddRowModal(container, siteId, table),
-    }, [h('span', { innerHTML: icon('plus') }), ' Add Row']),
+    h('div', { className: 'flex gap-2' }, [
+      h('button', {
+        className: 'btn btn--sm btn--secondary',
+        title: 'Export as CSV',
+        onClick: async () => {
+          try {
+            const token = getToken();
+            const res = await fetch(`/admin/api/sites/${siteId}/tables/${table.table_name}/csv`, {
+              headers: token ? { 'Authorization': `Bearer ${token}` } : {},
+            });
+            if (!res.ok) throw new Error(`Export failed (${res.status})`);
+            const blob = await res.blob();
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `${table.table_name}.csv`;
+            a.click();
+            URL.revokeObjectURL(url);
+            toast.success('CSV exported');
+          } catch (err) {
+            toast.error(err.message);
+          }
+        },
+      }, [h('span', { innerHTML: icon('download') }), ' CSV']),
+      h('button', {
+        className: 'btn btn--sm btn--secondary',
+        title: 'Add column',
+        onClick: () => showAddColumnModal(container, siteId, table),
+      }, [h('span', { innerHTML: icon('plus') }), ' Column']),
+      h('button', {
+        className: 'btn btn--primary btn--sm',
+        onClick: () => showAddRowModal(container, siteId, table),
+      }, [h('span', { innerHTML: icon('plus') }), ' Add Row']),
+    ]),
   ]);
 
   container.appendChild(back);
@@ -320,4 +350,49 @@ function confirmDeleteRow(container, siteId, table, row) {
 function parseSchema(raw) {
   if (typeof raw === 'object' && raw !== null) return raw;
   return safeJsonParse(raw, {});
+}
+
+function showAddColumnModal(container, siteId, table) {
+  const nameInput = h('input', { className: 'input', placeholder: 'column_name' });
+  const typeSelect = h('select', { className: 'input' }, [
+    h('option', { value: 'TEXT' }, 'TEXT'),
+    h('option', { value: 'INTEGER' }, 'INTEGER'),
+    h('option', { value: 'REAL' }, 'REAL'),
+    h('option', { value: 'BOOLEAN' }, 'BOOLEAN'),
+    h('option', { value: 'PASSWORD' }, 'PASSWORD (bcrypt)'),
+    h('option', { value: 'ENCRYPTED' }, 'ENCRYPTED (AES)'),
+  ]);
+  const notNullCheck = h('input', { type: 'checkbox' });
+
+  const form = h('div', {}, [
+    h('div', { className: 'form-group' }, [h('label', {}, 'Column Name'), nameInput]),
+    h('div', { className: 'form-group' }, [h('label', {}, 'Type'), typeSelect]),
+    h('div', { className: 'form-group' }, [
+      h('label', { className: 'flex items-center gap-2' }, [notNullCheck, 'NOT NULL']),
+    ]),
+  ]);
+
+  modal.show(`Add Column to ${table.table_name}`, form, [
+    { label: 'Cancel', onClick: () => {} },
+    {
+      label: 'Add Column',
+      className: 'btn btn--primary',
+      onClick: async () => {
+        const colName = nameInput.value.trim();
+        if (!colName) { toast.error('Column name required'); return false; }
+        try {
+          await post(`/admin/api/sites/${siteId}/tables/${table.table_name}/columns`, {
+            column_name: colName,
+            column_type: typeSelect.value,
+            not_null: notNullCheck.checked,
+          });
+          toast.success(`Column "${colName}" added`);
+          showTableRows(container, table, siteId);
+        } catch (err) {
+          toast.error(err.message);
+          return false;
+        }
+      },
+    },
+  ]);
 }

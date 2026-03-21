@@ -19,15 +19,15 @@ import (
 // EndpointsTool — unified manage_endpoints tool
 // ---------------------------------------------------------------------------
 
-// EndpointsTool consolidates API endpoint and auth endpoint management into a
-// single tool with actions: create_api, list_api, delete_api,
-// create_auth, list_auth, delete_auth, create_upload, create_stream,
-// create_websocket, verify_password, create_oauth, list_oauth, delete_oauth.
+// EndpointsTool consolidates all endpoint management into a single tool.
+// Actions: create/update/list/delete for api, auth, upload, stream, websocket,
+// and llm endpoints, plus create/list/delete for oauth, verify_password, and
+// generate_docs.
 type EndpointsTool struct{}
 
 func (t *EndpointsTool) Name() string { return "manage_endpoints" }
 func (t *EndpointsTool) Description() string {
-	return "Create, list, or delete API, auth, upload, stream, websocket, and oauth endpoints."
+	return "Create, update, list, or delete API, auth, upload, stream, websocket, LLM, and oauth endpoints. Generate OpenAPI docs."
 }
 
 func (t *EndpointsTool) Guide() string {
@@ -40,8 +40,10 @@ func (t *EndpointsTool) Guide() string {
 - **create_websocket**: Bidirectional relay. Connect: ws(s)://host/api/{path}/ws?room=X. Echo suppression: update UI optimistically after send. Server broadcasts {_type:"join"/"leave", _sender:"UUID"}.
 - **create_stream**: SSE. new EventSource('/api/{path}/stream').
 - **create_upload**: Multipart POST /api/{path}/upload -> {url, filename, size, type}. Optional table_name auto-persists uploads.
+- **create_llm does NOT provide CRUD**. If a page needs data listing AND AI features, create BOTH a create_api (for CRUD) and a create_llm (for AI chat/completion).
 - **create_oauth**: Requires provider_name, client_id, client_secret, authorize_url, token_url, userinfo_url, scopes, auth_path (the auth endpoint to link).
 - **CORS**: Set cors_origins, cors_methods, cors_headers on create_api/update_api to enable cross-origin requests. Use cors_origins="*" for any origin. Preflight OPTIONS requests are handled automatically.
+- **Row-Level Security**: Set owner_column on create_api (e.g. owner_column="user_id") to scope data per user. GET returns only rows where owner_column matches the JWT user. POST auto-sets the column. PUT/DELETE only affect owned rows. Admin role bypasses the filter.
 
 **Updating endpoints:**
 - **update_api/update_auth/update_upload/update_stream/update_websocket**: Pass the same path + only the fields you want to change (methods, requires_auth, public_read, rate_limit, etc.). Omitted fields keep their current values. You cannot change table_name or action type after creation.
@@ -94,7 +96,7 @@ func (t *EndpointsTool) Parameters() map[string]interface{} {
 			},
 			"requires_auth": map[string]interface{}{
 				"type":        "boolean",
-				"description": "If true, requests must include a valid bearer token (default: false). For create_api, create_upload, and create_stream.",
+				"description": "If true, requests must include a valid bearer token (default: false).",
 			},
 			"public_read": map[string]interface{}{
 				"type":        "boolean",
@@ -102,7 +104,7 @@ func (t *EndpointsTool) Parameters() map[string]interface{} {
 			},
 			"rate_limit": map[string]interface{}{
 				"type":        "number",
-				"description": "Max requests per minute per IP (default: 60). Only for create_api.",
+				"description": "Max requests per minute per IP. Default: 60 for API, 10 for LLM. For create_api and create_llm.",
 			},
 			"username_column": map[string]interface{}{
 				"type":        "string",
@@ -137,6 +139,10 @@ func (t *EndpointsTool) Parameters() map[string]interface{} {
 			"required_role": map[string]interface{}{
 				"type":        "string",
 				"description": "Role required to access API endpoint (e.g. 'admin'). Implies requires_auth=true. Only for create_api.",
+			},
+			"owner_column": map[string]interface{}{
+				"type":        "string",
+				"description": "Column for row-level security (e.g. 'user_id'). GET returns only owned rows, POST auto-sets it, PUT/DELETE scope to owned rows. Admin role bypasses. Implies requires_auth. Only for create_api/update_api.",
 			},
 			"default_role": map[string]interface{}{
 				"type":        "string",
@@ -343,9 +349,17 @@ func (t *EndpointsTool) createAPI(ctx *ToolContext, args map[string]interface{})
 	corsMethods := OptionalString(args, "cors_methods", "")
 	corsHeaders := OptionalString(args, "cors_headers", "")
 
+	// Row-level security: when owner_column is set, queries are scoped to the
+	// authenticated user's ID. Requires requires_auth to be effective.
+	var ownerColumn *string
+	if oc, ok := args["owner_column"].(string); ok && oc != "" {
+		ownerColumn = &oc
+		requiresAuth = true // owner scoping implies auth required
+	}
+
 	_, err = ctx.DB.Exec(
-		`INSERT INTO ho_api_endpoints (path, table_name, methods, public_columns, requires_auth, public_read, required_role, rate_limit, cors_origins, cors_methods, cors_headers)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`INSERT INTO ho_api_endpoints (path, table_name, methods, public_columns, requires_auth, public_read, required_role, rate_limit, cors_origins, cors_methods, cors_headers, owner_column)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(path) DO UPDATE SET
 		   table_name = excluded.table_name,
 		   methods = excluded.methods,
@@ -356,8 +370,9 @@ func (t *EndpointsTool) createAPI(ctx *ToolContext, args map[string]interface{})
 		   rate_limit = excluded.rate_limit,
 		   cors_origins = excluded.cors_origins,
 		   cors_methods = excluded.cors_methods,
-		   cors_headers = excluded.cors_headers`,
-		path, tableName, string(methodsJSON), publicColsJSON, requiresAuth, publicRead, requiredRole, rateLimit, corsOrigins, corsMethods, corsHeaders,
+		   cors_headers = excluded.cors_headers,
+		   owner_column = excluded.owner_column`,
+		path, tableName, string(methodsJSON), publicColsJSON, requiresAuth, publicRead, requiredRole, rateLimit, corsOrigins, corsMethods, corsHeaders, ownerColumn,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("creating API endpoint: %w", err)
@@ -373,6 +388,9 @@ func (t *EndpointsTool) createAPI(ctx *ToolContext, args map[string]interface{})
 	}
 	if requiredRole != nil {
 		data["required_role"] = *requiredRole
+	}
+	if ownerColumn != nil {
+		data["owner_column"] = *ownerColumn
 	}
 	return &Result{Success: true, Data: data}, nil
 }
@@ -437,6 +455,14 @@ func (t *EndpointsTool) updateAPI(ctx *ToolContext, args map[string]interface{})
 	if ch, ok := args["cors_headers"].(string); ok {
 		setClauses = append(setClauses, "cors_headers = ?")
 		vals = append(vals, ch)
+	}
+	if oc, ok := args["owner_column"].(string); ok {
+		setClauses = append(setClauses, "owner_column = ?")
+		if oc == "" {
+			vals = append(vals, nil) // clear owner_column
+		} else {
+			vals = append(vals, oc)
+		}
 	}
 
 	if len(setClauses) == 0 {
@@ -793,8 +819,8 @@ func (t *EndpointsTool) createUpload(ctx *ToolContext, args map[string]interface
 		}}, nil
 	}
 
-	// Parse allowed_types (default: image/*, application/pdf).
-	allowedTypes := []string{"image/*", "application/pdf"}
+	// Parse allowed_types (default: common file types).
+	allowedTypes := []string{"image/*", "application/pdf", "text/*", "application/json", "application/zip"}
 	if typesRaw, ok := args["allowed_types"].([]interface{}); ok && len(typesRaw) > 0 {
 		allowedTypes = nil
 		for _, t := range typesRaw {

@@ -67,14 +67,14 @@ func printBanner(cfg *config.Config) {
    ─────────────────────────────────
    %sAdmin:%s     %s
    %sProjects:%s  %s
-   ─────────────────────────────────
-   %sCreated by Mark Durlinger (Markyboy)
-   
-   Source    : https://github.com/markdr-hue/HO
-   Discord   : https://discord.gg/VRdYgDQ2qr
-   X/Twitter : https://x.com/humans_out_mark
+   ───────────────────────────────── 
+   %sSource via https://github.com/markdr-hue/HO
 
-   Special thanks to https://caddyserver.com & https://letsencrypt.org%s
+   Special thanks to:
+   https://caddyserver.com
+   https://letsencrypt.org
+
+   Created by Mark Durlinger%s
 
 `, cyan, reset, reset, reset, dim, Version, reset,
 		green, reset, adminURL,

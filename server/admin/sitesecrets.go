@@ -86,3 +86,44 @@ func (h *SiteSecretsHandler) Delete(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{"deleted": secretID})
 }
+
+type createSecretRequest struct {
+	Name  string `json:"name"`
+	Value string `json:"value"`
+}
+
+// Create stores a new encrypted secret.
+func (h *SiteSecretsHandler) Create(w http.ResponseWriter, r *http.Request) {
+	_, siteDB := requireSiteDB(w, r, h.deps.SiteDBManager)
+	if siteDB == nil {
+		return
+	}
+
+	var req createSecretRequest
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	if req.Name == "" || req.Value == "" {
+		writeError(w, http.StatusBadRequest, "name and value are required")
+		return
+	}
+
+	encrypted, err := h.deps.Encryptor.Encrypt(req.Value)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to encrypt secret")
+		return
+	}
+
+	_, err = siteDB.ExecWrite(
+		`INSERT INTO ho_secrets (name, value_encrypted, updated_at)
+		 VALUES (?, ?, CURRENT_TIMESTAMP)
+		 ON CONFLICT(name) DO UPDATE SET value_encrypted = excluded.value_encrypted, updated_at = CURRENT_TIMESTAMP`,
+		req.Name, encrypted,
+	)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to store secret")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{"stored": req.Name})
+}

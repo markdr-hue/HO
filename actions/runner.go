@@ -7,6 +7,8 @@ package actions
 
 import (
 	"bytes"
+	"crypto/hmac"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -166,6 +168,8 @@ func (r *Runner) execute(siteDB *sql.DB, event events.Event, actionID int, name,
 		err = r.executeInsertData(siteDB, config)
 	case "update_data":
 		err = r.executeUpdateData(siteDB, config)
+	case "trigger_webhook":
+		err = r.executeTriggerWebhook(siteDB, event, config)
 	default:
 		r.logger.Warn("action: unknown action_type", "action", name, "type", actionType)
 		return
@@ -480,4 +484,84 @@ func (r *Runner) executeUpdateData(siteDB *sql.DB, config map[string]interface{}
 		return fmt.Errorf("update_data: %w", err)
 	}
 	return nil
+}
+
+// executeTriggerWebhook sends a payload to an outgoing webhook by name.
+// Config: {"webhook_name":"notify-slack", "payload":{"message":"Order placed"}}
+func (r *Runner) executeTriggerWebhook(siteDB *sql.DB, event events.Event, config map[string]interface{}) error {
+	webhookName, _ := config["webhook_name"].(string)
+	if webhookName == "" {
+		return fmt.Errorf("trigger_webhook: 'webhook_name' is required")
+	}
+
+	var url, secret string
+	var isEnabled bool
+	var webhookID int
+	err := siteDB.QueryRow(
+		"SELECT id, url, secret, is_enabled FROM ho_webhooks WHERE name = ? AND direction = 'outgoing'",
+		webhookName,
+	).Scan(&webhookID, &url, &secret, &isEnabled)
+	if err != nil {
+		return fmt.Errorf("trigger_webhook: outgoing webhook '%s' not found", webhookName)
+	}
+	if !isEnabled {
+		return fmt.Errorf("trigger_webhook: webhook '%s' is disabled", webhookName)
+	}
+	if url == "" {
+		return fmt.Errorf("trigger_webhook: webhook '%s' has no URL", webhookName)
+	}
+
+	// Build payload from config or event.
+	payload := event.Payload
+	if customPayload, ok := config["payload"].(map[string]interface{}); ok {
+		payload = customPayload
+	}
+
+	bodyBytes, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("trigger_webhook: marshaling payload: %w", err)
+	}
+
+	req, err := http.NewRequest("POST", url, bytes.NewReader(bodyBytes))
+	if err != nil {
+		return fmt.Errorf("trigger_webhook: creating request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", "HO-Webhook/1.0")
+
+	// Sign with HMAC-SHA256 if secret is configured.
+	if secret != "" {
+		mac := computeHMAC(bodyBytes, []byte(secret))
+		req.Header.Set("X-Webhook-Signature", fmt.Sprintf("sha256=%x", mac))
+	}
+
+	resp, err := r.client.Do(req)
+	if err != nil {
+		// Log failure.
+		siteDB.Exec(
+			"INSERT INTO ho_webhook_logs (webhook_id, direction, event_type, payload, success, status_code) VALUES (?, 'outgoing', ?, ?, 0, 0)",
+			webhookID, string(event.Type), string(bodyBytes),
+		)
+		return fmt.Errorf("trigger_webhook: %w", err)
+	}
+	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+
+	// Log result.
+	siteDB.Exec(
+		"INSERT INTO ho_webhook_logs (webhook_id, direction, event_type, payload, response, status_code, success) VALUES (?, 'outgoing', ?, ?, ?, ?, ?)",
+		webhookID, string(event.Type), string(bodyBytes), string(respBody), resp.StatusCode, resp.StatusCode < 400,
+	)
+
+	if resp.StatusCode >= 400 {
+		return fmt.Errorf("trigger_webhook: webhook returned %d", resp.StatusCode)
+	}
+	return nil
+}
+
+// computeHMAC generates HMAC-SHA256 of message with key.
+func computeHMAC(message, key []byte) []byte {
+	mac := hmac.New(sha256.New, key)
+	mac.Write(message)
+	return mac.Sum(nil)
 }

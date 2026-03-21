@@ -147,6 +147,7 @@ CREATE TABLE IF NOT EXISTS ho_api_endpoints (
     cors_origins TEXT DEFAULT '',
     cors_methods TEXT DEFAULT '',
     cors_headers TEXT DEFAULT '',
+    owner_column TEXT DEFAULT NULL,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -439,7 +440,7 @@ CREATE TABLE IF NOT EXISTS ho_llm_endpoints (
     path TEXT UNIQUE NOT NULL,
     system_prompt TEXT NOT NULL DEFAULT '',
     model_id TEXT DEFAULT '',
-    max_tokens INTEGER DEFAULT 1024,
+    max_tokens INTEGER DEFAULT 4096,
     temperature REAL DEFAULT 0.7,
     max_history INTEGER DEFAULT 20,
     rate_limit INTEGER DEFAULT 10,

@@ -8,7 +8,7 @@
  */
 
 import { h, clear } from '../../core/dom.js';
-import { get, post, del } from '../../core/http.js';
+import { get, post, put, del } from '../../core/http.js';
 import { icon } from '../../ui/icon.js';
 import * as toast from '../../ui/toast.js';
 import * as modal from '../../ui/modal.js';
@@ -112,6 +112,24 @@ function renderTasksList(container, tasks, siteId, reload) {
               className: 'btn btn--sm btn--secondary',
               onClick: () => showTaskRunsModal(siteId, task),
             }, 'History'),
+            h('button', {
+              className: 'btn btn--sm btn--secondary',
+              title: 'Run now',
+              onClick: async () => {
+                try {
+                  await post(`/admin/api/sites/${siteId}/tasks/${task.id}/run`, {});
+                  toast.success(`Task "${task.name}" triggered`);
+                  reload();
+                } catch (err) {
+                  toast.error('Failed to run task: ' + err.message);
+                }
+              },
+            }, [h('span', { innerHTML: icon('zap') }), ' Run']),
+            h('button', {
+              className: 'btn btn--sm btn--ghost',
+              title: 'Edit',
+              onClick: () => showEditTaskModal(siteId, task, reload),
+            }, [h('span', { innerHTML: icon('edit') })]),
             toggleBtn,
             deleteBtn,
           ] : []),
@@ -202,6 +220,56 @@ function showCreateTaskModal(siteId, container, reload) {
         try {
           await post(`/admin/api/sites/${siteId}/tasks`, body);
           toast.success('Task created');
+          reload();
+        } catch (err) {
+          toast.error(err.message);
+          return false;
+        }
+      },
+    },
+  ]);
+}
+
+function showEditTaskModal(siteId, task, reload) {
+  const nameInput = h('input', { className: 'input', value: task.name });
+  const descInput = h('textarea', { className: 'input', rows: 2, value: task.description || '' });
+  const cronInput = h('input', { className: 'input', value: task.cron_expression || '', placeholder: '0 */6 * * *' });
+  const intervalInput = h('input', { className: 'input', type: 'number', value: task.interval_seconds || '' });
+  const promptInput = h('textarea', { className: 'input', rows: 4, value: task.prompt || '' });
+
+  const content = h('div', {}, [
+    h('div', { className: 'form-group' }, [h('label', {}, 'Name'), nameInput]),
+    h('div', { className: 'form-group' }, [h('label', {}, 'Description'), descInput]),
+    h('div', { className: 'form-group' }, [h('label', {}, 'Cron Expression'), cronInput]),
+    h('div', { className: 'form-group' }, [h('label', {}, 'Interval (seconds)'), intervalInput]),
+    h('div', { className: 'form-group' }, [h('label', {}, 'Prompt'), promptInput]),
+  ]);
+
+  modal.show(`Edit Task: ${task.name}`, content, [
+    { label: 'Cancel', onClick: () => {} },
+    {
+      label: 'Save',
+      className: 'btn btn--primary',
+      onClick: async () => {
+        const body = {};
+        const name = nameInput.value.trim();
+        if (name && name !== task.name) body.name = name;
+        const desc = descInput.value.trim();
+        if (desc !== (task.description || '')) body.description = desc;
+        const cron = cronInput.value.trim();
+        if (cron !== (task.cron_expression || '')) body.cron_expression = cron;
+        const interval = parseInt(intervalInput.value) || 0;
+        if (interval !== (task.interval_seconds || 0)) body.interval_seconds = interval;
+        const prompt = promptInput.value.trim();
+        if (prompt !== (task.prompt || '')) body.prompt = prompt;
+
+        if (Object.keys(body).length === 0) {
+          toast.info('No changes made');
+          return;
+        }
+        try {
+          await put(`/admin/api/sites/${siteId}/tasks/${task.id}`, body);
+          toast.success('Task updated');
           reload();
         } catch (err) {
           toast.error(err.message);

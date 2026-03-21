@@ -8,7 +8,7 @@
  */
 
 import { h, clear } from '../../core/dom.js';
-import { get, put, del } from '../../core/http.js';
+import { get, post, put, del } from '../../core/http.js';
 import { icon } from '../../ui/icon.js';
 import * as toast from '../../ui/toast.js';
 import * as modal from '../../ui/modal.js';
@@ -54,6 +54,11 @@ function renderEndpointsList(container, apiEndpoints, authEndpoints, siteId) {
 
   const hasApi = apiEndpoints && apiEndpoints.length > 0;
   const hasAuth = authEndpoints && authEndpoints.length > 0;
+
+  container.appendChild(h('button', {
+    className: 'btn btn--primary btn--sm mb-3',
+    onClick: () => showCreateEndpointModal(container, siteId),
+  }, [h('span', { innerHTML: icon('plus') }), ' Create Endpoint']));
 
   if (!hasApi && !hasAuth) {
     container.appendChild(emptyState('No endpoints created yet.'));
@@ -267,4 +272,76 @@ function confirmDeleteAuth(container, endpoint, siteId) {
       toast.error(err.message);
     }
   });
+}
+
+async function showCreateEndpointModal(container, siteId) {
+  // Load tables for dropdown.
+  let tables = [];
+  try {
+    tables = await get(`/admin/api/sites/${siteId}/tables`);
+  } catch (e) { /* ignore */ }
+
+  const pathInput = h('input', { className: 'input', placeholder: 'e.g. posts, users, products' });
+  const tableSelect = h('select', { className: 'input' }, [
+    h('option', { value: '' }, '-- Select table --'),
+    ...tables.map(t => h('option', { value: t.table_name }, t.table_name)),
+  ]);
+
+  const methodChecks = {};
+  const methodsRow = h('div', { className: 'flex gap-3' },
+    ['GET', 'POST', 'PUT', 'DELETE'].map(m => {
+      const cb = h('input', { type: 'checkbox', checked: true });
+      methodChecks[m] = cb;
+      return h('label', { className: 'flex items-center gap-1 text-sm' }, [cb, m]);
+    })
+  );
+
+  const authCheck = h('input', { type: 'checkbox' });
+  const publicReadCheck = h('input', { type: 'checkbox' });
+  const ownerInput = h('input', { className: 'input', placeholder: 'e.g. user_id (optional)' });
+
+  const form = h('div', {}, [
+    h('div', { className: 'form-group' }, [h('label', {}, 'Path'), pathInput]),
+    h('div', { className: 'form-group' }, [h('label', {}, 'Table'), tableSelect]),
+    h('div', { className: 'form-group' }, [h('label', {}, 'Methods'), methodsRow]),
+    h('div', { className: 'form-group' }, [h('label', { className: 'flex items-center gap-2' }, [authCheck, 'Requires Auth'])]),
+    h('div', { className: 'form-group' }, [h('label', { className: 'flex items-center gap-2' }, [publicReadCheck, 'Public Read (GET without auth)'])]),
+    h('div', { className: 'form-group' }, [h('label', {}, 'Owner Column (row-level security)'), ownerInput]),
+  ]);
+
+  modal.show('Create API Endpoint', form, [
+    { label: 'Cancel', onClick: () => {} },
+    {
+      label: 'Create',
+      className: 'btn btn--primary',
+      onClick: async () => {
+        const path = pathInput.value.trim();
+        const tableName = tableSelect.value;
+        if (!path || !tableName) {
+          toast.error('Path and table are required');
+          return false;
+        }
+        const methods = Object.entries(methodChecks).filter(([, cb]) => cb.checked).map(([m]) => m);
+        if (methods.length === 0) {
+          toast.error('Select at least one method');
+          return false;
+        }
+        try {
+          await post(`/admin/api/sites/${siteId}/endpoints`, {
+            path,
+            table_name: tableName,
+            methods,
+            requires_auth: authCheck.checked,
+            public_read: publicReadCheck.checked,
+            owner_column: ownerInput.value.trim(),
+          });
+          toast.success('Endpoint created');
+          loadEndpoints(container, siteId);
+        } catch (err) {
+          toast.error(err.message);
+          return false;
+        }
+      },
+    },
+  ]);
 }

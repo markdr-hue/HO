@@ -254,3 +254,25 @@ func GetModelForSite(db *sql.DB, siteID int) (*LLMModel, *LLMProvider, error) {
 	}
 	return m, p, nil
 }
+
+// GetFallbackModel returns an alternative enabled model on a different provider
+// than the one specified by excludeProviderID. Prefers tool-capable models.
+// Returns sql.ErrNoRows if no suitable fallback exists.
+func GetFallbackModel(db *sql.DB, excludeProviderID int) (*LLMModel, *LLMProvider, error) {
+	m := &LLMModel{}
+	p := &LLMProvider{}
+	err := db.QueryRow(`
+		SELECT m.id, m.provider_id, m.model_id, m.display_name, m.max_tokens, m.supports_streaming, m.supports_tools, m.is_default, m.config, m.created_at,
+		       p.id, p.name, p.provider_type, p.api_key_encrypted, p.base_url, p.is_enabled, p.config, p.created_at, p.updated_at
+		FROM llm_models m
+		JOIN llm_providers p ON p.id = m.provider_id
+		WHERE p.is_enabled = 1 AND p.id != ? AND m.supports_tools = 1
+		ORDER BY m.is_default DESC, m.id ASC
+		LIMIT 1
+	`, excludeProviderID).Scan(&m.ID, &m.ProviderID, &m.ModelID, &m.DisplayName, &m.MaxTokens, &m.SupportsStreaming, &m.SupportsTools, &m.IsDefault, &m.Config, &m.CreatedAt,
+		&p.ID, &p.Name, &p.ProviderType, &p.APIKeyEncrypted, &p.BaseURL, &p.IsEnabled, &p.Config, &p.CreatedAt, &p.UpdatedAt)
+	if err != nil {
+		return nil, nil, err
+	}
+	return m, p, nil
+}

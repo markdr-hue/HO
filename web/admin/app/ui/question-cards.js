@@ -61,6 +61,7 @@ export function createGroupedForm(questions, { onSubmit }) {
     ]));
 
     const { inputEl, getValue, hasValue } = buildQuestionInput(q, {
+      onInput: updateProgress,
       wrapClass: 'question-group__input',
     });
     itemEl.appendChild(inputEl);

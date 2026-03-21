@@ -8,7 +8,7 @@
  */
 
 import { h, clear } from '../../core/dom.js';
-import { get, del } from '../../core/http.js';
+import { get, post, put, del } from '../../core/http.js';
 import { icon } from '../../ui/icon.js';
 import * as toast from '../../ui/toast.js';
 import * as modal from '../../ui/modal.js';
@@ -70,6 +70,15 @@ function renderLayoutsList(container, layouts, siteId) {
             className: 'btn btn--sm btn--secondary',
             onClick: () => showLayoutDetail(layout),
           }, 'View'),
+          h('button', {
+            className: 'btn btn--sm btn--primary',
+            onClick: () => showLayoutEditor(layout, siteId, container),
+          }, 'Edit'),
+          h('button', {
+            className: 'btn btn--ghost btn--sm',
+            title: 'Version history',
+            onClick: () => showLayoutHistory(layout, siteId, container),
+          }, [h('span', { innerHTML: icon('clock') })]),
           ...(!isDefault ? [h('button', {
             className: 'btn btn--ghost btn--sm',
             title: 'Delete layout',
@@ -121,4 +130,108 @@ function showLayoutDetail(layout) {
   );
 
   modal.show(`Layout: ${layout.name}`, content, [{ label: 'Close', onClick: () => {} }]);
+}
+
+async function showLayoutEditor(layout, siteId, container) {
+  const headInput = h('textarea', {
+    className: 'input',
+    rows: 4,
+    style: { fontFamily: 'monospace', fontSize: 'var(--text-sm)' },
+    value: layout.head_content || '',
+  });
+
+  const editorContainer = h('div');
+  let editor = null;
+
+  const form = h('div', {}, [
+    h('div', { className: 'form-group' }, [
+      h('label', {}, 'Head Content (fonts, meta, CDN links)'),
+      headInput,
+    ]),
+    h('div', { className: 'form-group' }, [
+      h('label', {}, 'Template'),
+      editorContainer,
+    ]),
+  ]);
+
+  import('../../ui/code-editor.js').then(async ({ createEditor }) => {
+    editor = await createEditor(editorContainer, {
+      value: layout.template || '',
+      filename: 'layout.html',
+      minHeight: 300,
+    });
+  }).catch(() => {
+    const fallback = h('textarea', {
+      className: 'input',
+      rows: 12,
+      style: { fontFamily: 'monospace', fontSize: 'var(--text-sm)' },
+      value: layout.template || '',
+    });
+    editorContainer.appendChild(fallback);
+    editor = { getValue: () => fallback.value, destroy: () => {} };
+  });
+
+  modal.show(`Edit Layout: ${layout.name}`, form, [
+    { label: 'Cancel', onClick: () => { if (editor) editor.destroy(); } },
+    {
+      label: 'Save',
+      className: 'btn btn--primary',
+      onClick: async () => {
+        try {
+          await put(`/admin/api/sites/${siteId}/layouts/${layout.id}`, {
+            head_content: headInput.value,
+            template: editor ? editor.getValue() : layout.template,
+          });
+          toast.success('Layout updated');
+          if (editor) editor.destroy();
+          loadLayouts(container, siteId);
+        } catch (err) {
+          toast.error(err.message);
+          return false;
+        }
+      },
+    },
+  ], { wide: true });
+}
+
+async function showLayoutHistory(layout, siteId, container) {
+  let versions;
+  try {
+    versions = await get(`/admin/api/sites/${siteId}/layouts/${layout.id}/versions`);
+  } catch (err) {
+    toast.error('Failed to load history: ' + err.message);
+    return;
+  }
+
+  if (!versions || versions.length === 0) {
+    toast.info('No version history for this layout.');
+    return;
+  }
+
+  const list = h('div', { className: 'version-list' });
+  for (const v of versions) {
+    const date = new Date(v.created_at).toLocaleString();
+    const row = h('div', { className: 'version-row flex items-center gap-2', style: { padding: '8px 0', borderBottom: '1px solid var(--color-border)' } }, [
+      h('span', { className: 'badge badge--sm' }, `v${v.version_number}`),
+      h('span', { className: 'text-sm text-secondary', style: { flex: '1' } }, `${v.changed_by} \u00b7 ${date}`),
+      h('button', {
+        className: 'btn btn--sm btn--secondary',
+        onClick: async () => {
+          try {
+            await post(`/admin/api/sites/${siteId}/layouts/${layout.id}/revert/${v.version_number}`);
+            toast.success(`Reverted layout to v${v.version_number}`);
+            modal.close();
+            loadLayouts(container, siteId);
+          } catch (err) {
+            toast.error('Revert failed: ' + err.message);
+          }
+        },
+      }, 'Revert'),
+    ]);
+    list.appendChild(row);
+  }
+
+  modal.show(`History: ${layout.name}`, list, [
+    { label: 'Close', onClick: () => {} },
+  ]);
 }

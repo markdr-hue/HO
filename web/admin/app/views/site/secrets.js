@@ -8,7 +8,7 @@
  */
 
 import { h, clear } from '../../core/dom.js';
-import { get, del } from '../../core/http.js';
+import { get, post, del } from '../../core/http.js';
 import { icon } from '../../ui/icon.js';
 import * as toast from '../../ui/toast.js';
 import * as modal from '../../ui/modal.js';
@@ -50,10 +50,16 @@ async function loadSecrets(container, siteId) {
 function renderSecretsList(container, secrets, siteId) {
   clear(container);
 
-  container.appendChild(h('div', {
-    className: 'text-sm text-secondary mb-3',
-    style: { padding: '8px 12px', background: 'var(--bg-secondary)', borderRadius: '6px' },
-  }, 'Secret values are encrypted and cannot be viewed. Only the AI can read them.'));
+  container.appendChild(h('div', { className: 'flex items-center gap-2 mb-3' }, [
+    h('button', {
+      className: 'btn btn--primary btn--sm',
+      onClick: () => showCreateSecretModal(container, siteId),
+    }, [h('span', { innerHTML: icon('plus') }), ' Add Secret']),
+    h('span', {
+      className: 'text-sm text-secondary',
+      style: { padding: '8px 12px', background: 'var(--bg-secondary)', borderRadius: '6px' },
+    }, 'Values are encrypted. Only the AI can read them.'),
+  ]));
 
   if (!secrets || secrets.length === 0) {
     container.appendChild(emptyState('No secrets stored yet.'));
@@ -88,4 +94,49 @@ function renderSecretsList(container, secrets, siteId) {
     ]);
     container.appendChild(card);
   }
+}
+
+function showCreateSecretModal(container, siteId) {
+  const nameInput = h('input', { className: 'input', type: 'text', placeholder: 'e.g. stripe_api_key' });
+  const valueInput = h('input', { className: 'input', type: 'password', placeholder: 'Secret value' });
+  const toggleBtn = h('button', {
+    className: 'btn btn--ghost btn--sm',
+    type: 'button',
+    onClick: () => {
+      valueInput.type = valueInput.type === 'password' ? 'text' : 'password';
+      toggleBtn.textContent = valueInput.type === 'password' ? 'Show' : 'Hide';
+    },
+  }, 'Show');
+
+  const form = h('div', {}, [
+    h('div', { className: 'form-group' }, [h('label', {}, 'Name'), nameInput]),
+    h('div', { className: 'form-group' }, [
+      h('label', {}, 'Value'),
+      h('div', { className: 'flex gap-2' }, [valueInput, toggleBtn]),
+    ]),
+  ]);
+
+  modal.show('Add Secret', form, [
+    { label: 'Cancel', onClick: () => {} },
+    {
+      label: 'Store',
+      className: 'btn btn--primary',
+      onClick: async () => {
+        const name = nameInput.value.trim();
+        const value = valueInput.value;
+        if (!name || !value) {
+          toast.error('Name and value are required');
+          return false;
+        }
+        try {
+          await post(`/admin/api/sites/${siteId}/secrets`, { name, value });
+          toast.success('Secret stored');
+          loadSecrets(container, siteId);
+        } catch (err) {
+          toast.error(err.message);
+          return false;
+        }
+      },
+    },
+  ]);
 }

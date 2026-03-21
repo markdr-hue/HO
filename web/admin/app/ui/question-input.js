@@ -78,10 +78,11 @@ export function buildQuestionInput(questionData, { onInput, wrapClass } = {}) {
     hasValue = () => parsedFields.some(f => fieldInputs[f.name].value.trim());
 
   } else if (parsedOpts.length > 0 && type === 'multiple_choice') {
-    // Multiple choice toggle buttons
+    // Multiple choice toggle buttons with "Other..." option
     inputEl.appendChild(h('p', { className: 'text-sm text-secondary', style: { margin: '0 0 8px' } }, 'You can select multiple answers'));
     const selected = new Set();
     const optContainer = h('div', { className: 'chat-card__options' });
+
     for (const opt of parsedOpts) {
       const label = typeof opt === 'string' ? opt : opt.label || opt;
       const btn = h('button', {
@@ -94,15 +95,68 @@ export function buildQuestionInput(questionData, { onInput, wrapClass } = {}) {
       }, label);
       optContainer.appendChild(btn);
     }
+
+    // "Other..." toggle button + text input
+    const otherInput = h('input', {
+      type: 'text',
+      className: 'input input--sm',
+      placeholder: 'Type your answer...',
+      style: { display: 'none', marginTop: '8px' },
+      onInput: () => onInput?.(),
+    });
+    const otherBtn = h('button', {
+      className: 'btn btn--sm btn--ghost chat-card__option-btn',
+      onClick: () => {
+        if (selected.has('__other__')) {
+          selected.delete('__other__');
+          otherBtn.classList.remove('btn--active');
+          otherInput.style.display = 'none';
+          otherInput.value = '';
+        } else {
+          selected.add('__other__');
+          otherBtn.classList.add('btn--active');
+          otherInput.style.display = 'block';
+          otherInput.focus();
+        }
+        onInput?.();
+      },
+    }, 'Other\u2026');
+    optContainer.appendChild(otherBtn);
     inputEl.appendChild(optContainer);
-    getValue = () => selected.size > 0 ? [...selected].join(', ') : '';
-    hasValue = () => selected.size > 0;
+    inputEl.appendChild(otherInput);
+
+    getValue = () => {
+      const values = [...selected].filter(v => v !== '__other__');
+      const otherVal = otherInput.value.trim();
+      if (selected.has('__other__') && otherVal) values.push(otherVal);
+      return values.length > 0 ? values.join(', ') : '';
+    };
+    hasValue = () => {
+      const hasSelected = [...selected].some(v => v !== '__other__');
+      const hasOther = selected.has('__other__') && otherInput.value.trim() !== '';
+      return hasSelected || hasOther;
+    };
 
   } else if (parsedOpts.length > 0) {
-    // Single choice buttons
+    // Single choice buttons with "Other..." option
     let selectedValue = '';
+    let otherActive = false;
     const allBtns = [];
     const optContainer = h('div', { className: 'chat-card__options' });
+
+    const otherInput = h('input', {
+      type: 'text',
+      className: 'input input--sm',
+      placeholder: 'Type your answer...',
+      style: { display: 'none', marginTop: '8px' },
+      onInput: () => {
+        if (otherActive) {
+          selectedValue = otherInput.value.trim();
+          onInput?.();
+        }
+      },
+    });
+
     for (const opt of parsedOpts) {
       const label = typeof opt === 'string' ? opt : opt.label || opt;
       const btn = h('button', {
@@ -111,13 +165,34 @@ export function buildQuestionInput(questionData, { onInput, wrapClass } = {}) {
           allBtns.forEach(b => b.classList.remove('btn--active'));
           btn.classList.add('btn--active');
           selectedValue = label;
+          otherActive = false;
+          otherInput.style.display = 'none';
+          otherInput.value = '';
           onInput?.();
         },
       }, label);
       allBtns.push(btn);
       optContainer.appendChild(btn);
     }
+
+    // "Other..." button
+    const otherBtn = h('button', {
+      className: 'btn btn--sm btn--ghost chat-card__option-btn',
+      onClick: () => {
+        allBtns.forEach(b => b.classList.remove('btn--active'));
+        otherBtn.classList.add('btn--active');
+        otherActive = true;
+        selectedValue = otherInput.value.trim();
+        otherInput.style.display = 'block';
+        otherInput.focus();
+        onInput?.();
+      },
+    }, 'Other\u2026');
+    allBtns.push(otherBtn);
+    optContainer.appendChild(otherBtn);
     inputEl.appendChild(optContainer);
+    inputEl.appendChild(otherInput);
+
     getValue = () => selectedValue;
     hasValue = () => selectedValue !== '';
 

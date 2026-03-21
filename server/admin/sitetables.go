@@ -6,10 +6,13 @@
 package admin
 
 import (
+	"encoding/csv"
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"regexp"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -190,4 +193,152 @@ func (h *SiteTablesHandler) Rows(w http.ResponseWriter, r *http.Request) {
 		"schema":         schemaMap,
 		"secure_columns": secureCols,
 	})
+}
+
+// ExportCSV exports all rows of a table as CSV.
+func (h *SiteTablesHandler) ExportCSV(w http.ResponseWriter, r *http.Request) {
+	_, siteDB := requireSiteDB(w, r, h.deps.SiteDBManager)
+	if siteDB == nil {
+		return
+	}
+
+	tableName := chi.URLParam(r, "tableName")
+	if tableName == "" {
+		writeError(w, http.StatusBadRequest, "table name is required")
+		return
+	}
+
+	var count int
+	err := siteDB.QueryRow("SELECT COUNT(*) FROM ho_dynamic_tables WHERE table_name = ?", tableName).Scan(&count)
+	if err != nil || count == 0 {
+		writeError(w, http.StatusNotFound, "table not found")
+		return
+	}
+
+	secureCols, _ := tools.LoadSecureColumns(siteDB.Reader(), tableName)
+	hashCols := map[string]bool{}
+	for col, kind := range secureCols {
+		if kind == "hash" {
+			hashCols[col] = true
+		}
+	}
+
+	rows, err := siteDB.Query(fmt.Sprintf("SELECT * FROM \"%s\" ORDER BY id ASC LIMIT 5000", tableName))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to query table")
+		return
+	}
+	defer rows.Close()
+
+	allColumns, _ := rows.Columns()
+
+	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%s.csv", tableName))
+
+	writer := csv.NewWriter(w)
+
+	// Write header (skip password columns).
+	var header []string
+	var indices []int
+	for i, col := range allColumns {
+		if !hashCols[col] {
+			header = append(header, col)
+			indices = append(indices, i)
+		}
+	}
+	writer.Write(header)
+
+	for rows.Next() {
+		values := make([]interface{}, len(allColumns))
+		ptrs := make([]interface{}, len(allColumns))
+		for i := range values {
+			ptrs[i] = &values[i]
+		}
+		if err := rows.Scan(ptrs...); err != nil {
+			continue
+		}
+		var record []string
+		for _, idx := range indices {
+			col := allColumns[idx]
+			if secureCols[col] == "encrypt" {
+				record = append(record, "[encrypted]")
+			} else if values[idx] == nil {
+				record = append(record, "")
+			} else {
+				record = append(record, fmt.Sprintf("%v", values[idx]))
+			}
+		}
+		writer.Write(record)
+	}
+	writer.Flush()
+}
+
+var validColName = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9_]*$`)
+var allowedTypes = map[string]string{
+	"TEXT": "TEXT", "INTEGER": "INTEGER", "REAL": "REAL", "BOOLEAN": "BOOLEAN",
+	"PASSWORD": "TEXT", "ENCRYPTED": "TEXT",
+}
+
+type addColumnRequest struct {
+	ColumnName string `json:"column_name"`
+	ColumnType string `json:"column_type"`
+	NotNull    bool   `json:"not_null"`
+}
+
+// AddColumn adds a new column to an existing dynamic table.
+func (h *SiteTablesHandler) AddColumn(w http.ResponseWriter, r *http.Request) {
+	_, siteDB := requireSiteDB(w, r, h.deps.SiteDBManager)
+	if siteDB == nil {
+		return
+	}
+
+	tableName := chi.URLParam(r, "tableName")
+	if tableName == "" || tools.IsSystemTable(tableName) {
+		writeError(w, http.StatusBadRequest, "invalid table name")
+		return
+	}
+
+	var req addColumnRequest
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+
+	if !validColName.MatchString(req.ColumnName) {
+		writeError(w, http.StatusBadRequest, "invalid column name")
+		return
+	}
+
+	colType := strings.ToUpper(req.ColumnType)
+	sqlType, ok := allowedTypes[colType]
+	if !ok {
+		writeError(w, http.StatusBadRequest, "unsupported column type: "+req.ColumnType)
+		return
+	}
+
+	colDef := req.ColumnName + " " + sqlType
+	if req.NotNull {
+		colDef += " NOT NULL DEFAULT ''"
+	}
+
+	_, err := siteDB.ExecWrite(fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s", tableName, colDef))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to add column: "+err.Error())
+		return
+	}
+
+	// Track secure columns.
+	secureKinds := map[string]string{"PASSWORD": "hash", "ENCRYPTED": "encrypt"}
+	if kind, isSecure := secureKinds[colType]; isSecure {
+		var secureJSON string
+		siteDB.QueryRow("SELECT secure_columns FROM ho_dynamic_tables WHERE table_name = ?", tableName).Scan(&secureJSON)
+		var secureCols map[string]string
+		if json.Unmarshal([]byte(secureJSON), &secureCols) != nil {
+			secureCols = map[string]string{}
+		}
+		secureCols[req.ColumnName] = kind
+		newJSON, _ := json.Marshal(secureCols)
+		siteDB.ExecWrite("UPDATE ho_dynamic_tables SET secure_columns = ? WHERE table_name = ?", string(newJSON), tableName)
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{"table": tableName, "column_added": req.ColumnName})
 }

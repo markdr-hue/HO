@@ -245,3 +245,80 @@ func (h *SiteEndpointsHandler) Update(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "updated"})
 }
+
+type createEndpointRequest struct {
+	Path         string   `json:"path"`
+	TableName    string   `json:"table_name"`
+	Methods      []string `json:"methods"`
+	RequiresAuth bool     `json:"requires_auth"`
+	PublicRead   bool     `json:"public_read"`
+	RequiredRole string   `json:"required_role"`
+	OwnerColumn  string   `json:"owner_column"`
+	RateLimit    int      `json:"rate_limit"`
+}
+
+// Create adds a new API endpoint for a site.
+func (h *SiteEndpointsHandler) Create(w http.ResponseWriter, r *http.Request) {
+	_, siteDB := requireSiteDB(w, r, h.deps.SiteDBManager)
+	if siteDB == nil {
+		return
+	}
+
+	var req createEndpointRequest
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+
+	if req.Path == "" || req.TableName == "" {
+		writeError(w, http.StatusBadRequest, "path and table_name are required")
+		return
+	}
+
+	// Verify the table exists.
+	var tableCount int
+	siteDB.QueryRow("SELECT COUNT(*) FROM ho_dynamic_tables WHERE table_name = ?", req.TableName).Scan(&tableCount)
+	if tableCount == 0 {
+		writeError(w, http.StatusBadRequest, "table '"+req.TableName+"' does not exist")
+		return
+	}
+
+	// Check for duplicates.
+	var existing int
+	siteDB.QueryRow("SELECT COUNT(*) FROM ho_api_endpoints WHERE path = ?", req.Path).Scan(&existing)
+	if existing > 0 {
+		writeError(w, http.StatusConflict, "endpoint path '"+req.Path+"' already exists")
+		return
+	}
+
+	methods := req.Methods
+	if len(methods) == 0 {
+		methods = []string{"GET", "POST", "PUT", "DELETE"}
+	}
+	methodsJSON, _ := json.Marshal(methods)
+
+	rateLimit := req.RateLimit
+	if rateLimit <= 0 {
+		rateLimit = 60
+	}
+
+	var requiredRole *string
+	if req.RequiredRole != "" {
+		requiredRole = &req.RequiredRole
+	}
+	var ownerColumn *string
+	if req.OwnerColumn != "" {
+		ownerColumn = &req.OwnerColumn
+	}
+
+	_, err := siteDB.ExecWrite(
+		`INSERT INTO ho_api_endpoints (path, table_name, methods, requires_auth, public_read, required_role, owner_column, rate_limit)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		req.Path, req.TableName, string(methodsJSON), req.RequiresAuth, req.PublicRead, requiredRole, ownerColumn, rateLimit,
+	)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to create endpoint")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{"path": req.Path, "created": true})
+}

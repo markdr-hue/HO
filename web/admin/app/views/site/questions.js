@@ -10,6 +10,7 @@
 
 import { h, clear } from '../../core/dom.js';
 import { get, post } from '../../core/http.js';
+import * as state from '../../core/state.js';
 import * as toast from '../../ui/toast.js';
 import { emptyState } from '../../ui/helpers.js';
 import { createGroupedForm, createApprovalCard, createAnsweredCard } from '../../ui/question-cards.js';
@@ -48,11 +49,23 @@ export async function renderSiteQuestions(container, siteId) {
     if (pendingRegular.length > 0) {
       body.appendChild(createGroupedForm(pendingRegular, {
         onSubmit: async (answers) => {
+          let succeeded = 0;
+          let failed = 0;
           for (const { questionId, answer } of answers) {
-            await post(`/admin/api/questions/${questionId}/answer`, { answer });
+            try {
+              await post(`/admin/api/questions/${questionId}/answer`, { answer });
+              succeeded++;
+            } catch (err) {
+              failed++;
+              console.error(`Failed to submit answer for question ${questionId}:`, err);
+            }
           }
-          toast.success(`${answers.length} answers submitted`);
+          if (failed > 0) toast.error(`${failed} answer(s) failed to submit`);
+          if (succeeded > 0) toast.success(`${succeeded} answer(s) submitted`);
+          // Refresh and update badge from actual server state
           const fresh = await get(`/admin/api/sites/${siteId}/questions`);
+          const pendingCount = fresh.filter(q => q.status === 'pending').length;
+          state.set('pendingQuestions', pendingCount);
           renderList(fresh);
         },
       }));

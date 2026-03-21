@@ -152,6 +152,7 @@ type EndpointSpec struct {
 	RoleColumn     string   `json:"role_column,omitempty"`
 	JWTExpiryHours int      `json:"jwt_expiry_hours,omitempty"`
 	PublicColumns  []string `json:"public_columns,omitempty"`
+	OwnerColumn    string   `json:"owner_column,omitempty"` // Row-level security: scopes data per user
 }
 
 type TableSpec struct {

@@ -18,9 +18,10 @@ let currentKeyHandler = null;
  * @param {string} title
  * @param {HTMLElement|string} content - Body content
  * @param {Array<{label: string, className?: string, onClick: Function}>} [actions]
+ * @param {Object} [opts] - Options: { wide: boolean }
  * @returns {Function} close function
  */
-export function show(title, content, actions = []) {
+export function show(title, content, actions = [], opts = {}) {
   close(); // Close any existing modal
 
   const closeBtn = h('button', {
@@ -53,7 +54,8 @@ export function show(title, content, actions = []) {
     )
   );
 
-  const modal = h('div', { className: 'modal' }, [header, body, footer]);
+  const modalClass = 'modal' + (opts.wide ? ' modal--wide' : '');
+  const modal = h('div', { className: modalClass }, [header, body, footer]);
 
   const overlay = h('div', { className: 'modal-overlay' }, [modal]);
   overlay.addEventListener('click', (e) => {

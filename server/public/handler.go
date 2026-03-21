@@ -1280,6 +1280,13 @@ func (h *Handler) ServeFile(w http.ResponseWriter, r *http.Request) {
 // Dynamic API Handler
 // ---------------------------------------------------------------------------
 
+// apiRequestContext holds per-request context for row-level security.
+type apiRequestContext struct {
+	OwnerFilter    string      // e.g. " AND user_id = ?" or ""
+	OwnerFilterVal interface{} // the user ID value, nil if no filter
+	AuthUserID     int         // authenticated user's ID (0 = none)
+}
+
 type apiEndpoint struct {
 	ID            int
 	Path          string
@@ -1294,6 +1301,7 @@ type apiEndpoint struct {
 	CORSOrigins   string            // comma-separated allowed origins, "*" for any
 	CORSMethods   string            // comma-separated allowed methods
 	CORSHeaders   string            // comma-separated allowed headers
+	OwnerColumn   string            // when set, queries are scoped to authenticated user's ID
 }
 
 func (h *Handler) DynamicAPI(w http.ResponseWriter, r *http.Request) {
@@ -1423,10 +1431,15 @@ func (h *Handler) DynamicAPI(w http.ResponseWriter, r *http.Request) {
 
 	// Check auth if required (accepts site API key or user JWT).
 	// Skip auth for GET when public_read is enabled.
+	var authUserID int    // authenticated user's ID (0 = unauthenticated or site API key)
+	var authUserRole string // authenticated user's role
+	isSiteKey := false
 	if ep.RequiresAuth && !(r.Method == http.MethodGet && ep.PublicRead) {
 		token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 		// Site API keys bypass role checks (owner-level access).
-		if !h.validateSiteToken(site.ID, token) {
+		if h.validateSiteToken(site.ID, token) {
+			isSiteKey = true
+		} else {
 			// Try user JWT — must be scoped to this site.
 			if h.deps.JWTManager == nil {
 				writePublicError(w, http.StatusUnauthorized, "unauthorized")
@@ -1442,33 +1455,61 @@ func (h *Handler) DynamicAPI(w http.ResponseWriter, r *http.Request) {
 				writePublicError(w, http.StatusForbidden, "insufficient permissions")
 				return
 			}
+			authUserID = claims.UserID
+			authUserRole = claims.Role
+		}
+	} else if ep.OwnerColumn != "" {
+		// Owner-scoped endpoints: try to extract user ID from optional token for GET with public_read.
+		token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		if token != "" && h.deps.JWTManager != nil {
+			if claims, err := h.deps.JWTManager.Validate(token); err == nil && claims.SiteID == site.ID {
+				authUserID = claims.UserID
+				authUserRole = claims.Role
+			}
 		}
 	}
+
+	// Row-level security: compute owner filter for scoped endpoints.
+	// Admin role and site API keys bypass the filter.
+	var ownerFilter string       // SQL WHERE fragment: "AND user_id = ?"
+	var ownerFilterVal interface{} // the user ID value
+	if ep.OwnerColumn != "" && !isSiteKey && authUserRole != "admin" && authUserID > 0 {
+		ownerFilter = fmt.Sprintf(" AND %s = ?", ep.OwnerColumn)
+		ownerFilterVal = authUserID
+	}
+	_ = ownerFilter     // used by apiList, apiGetOne, apiUpdate, apiDelete
+	_ = ownerFilterVal  // used alongside ownerFilter
 
 	// Physical table name (per-site DB, no prefix needed).
 	physTable := ep.TableName
 
+	rc := &apiRequestContext{
+		OwnerFilter:    ownerFilter,
+		OwnerFilterVal: ownerFilterVal,
+		AuthUserID:     authUserID,
+	}
+
 	switch r.Method {
 	case http.MethodGet:
 		if rowID != "" {
-			h.apiGetOne(w, r, siteDB.Reader(), physTable, rowID, ep)
+			h.apiGetOne(w, r, siteDB.Reader(), physTable, rowID, ep, rc)
 		} else {
-			h.apiList(w, r, siteDB.Reader(), physTable, ep)
+			h.apiList(w, r, siteDB.Reader(), physTable, ep, rc)
 		}
 	case http.MethodPost:
-		h.apiInsert(w, r, siteDB.Writer(), physTable, ep, site.ID, endpointPath)
+		h.apiInsert(w, r, siteDB.Writer(), physTable, ep, site.ID, endpointPath, rc)
 	case http.MethodPut:
 		if rowID == "" {
 			writePublicError(w, http.StatusBadRequest, "ID required for PUT")
 			return
 		}
-		h.apiUpdate(w, r, siteDB.Writer(), physTable, rowID, ep, site.ID, endpointPath)
+		h.apiUpdate(w, r, siteDB.Writer(), physTable, rowID, ep, site.ID, endpointPath, rc)
 	case http.MethodDelete:
 		if rowID == "" {
 			writePublicError(w, http.StatusBadRequest, "ID required for DELETE")
 			return
 		}
-		h.apiDelete(w, siteDB.Writer(), physTable, rowID, ep, site.ID, endpointPath)
+		h.apiDelete(w, siteDB.Writer(), physTable, rowID, ep, site.ID, endpointPath, rc)
 	default:
 		writePublicError(w, http.StatusMethodNotAllowed, "method not allowed")
 	}
@@ -1477,17 +1518,18 @@ func (h *Handler) DynamicAPI(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) loadEndpoint(siteDB *sql.DB, path string) (*apiEndpoint, error) {
 	var ep apiEndpoint
 	var methodsJSON string
-	var publicColsJSON, requiredRole sql.NullString
+	var publicColsJSON, requiredRole, ownerColumn sql.NullString
 	var corsOrigins, corsMethods, corsHeaders sql.NullString
 	err := siteDB.QueryRow(
-		"SELECT id, path, table_name, methods, public_columns, requires_auth, public_read, required_role, rate_limit, COALESCE(cors_origins,''), COALESCE(cors_methods,''), COALESCE(cors_headers,'') FROM ho_api_endpoints WHERE path = ?",
+		"SELECT id, path, table_name, methods, public_columns, requires_auth, public_read, required_role, rate_limit, COALESCE(cors_origins,''), COALESCE(cors_methods,''), COALESCE(cors_headers,''), COALESCE(owner_column,'') FROM ho_api_endpoints WHERE path = ?",
 		path,
-	).Scan(&ep.ID, &ep.Path, &ep.TableName, &methodsJSON, &publicColsJSON, &ep.RequiresAuth, &ep.PublicRead, &requiredRole, &ep.RateLimit, &corsOrigins, &corsMethods, &corsHeaders)
+	).Scan(&ep.ID, &ep.Path, &ep.TableName, &methodsJSON, &publicColsJSON, &ep.RequiresAuth, &ep.PublicRead, &requiredRole, &ep.RateLimit, &corsOrigins, &corsMethods, &corsHeaders, &ownerColumn)
 	if err != nil {
 		return nil, err
 	}
 
 	ep.RequiredRole = requiredRole.String
+	ep.OwnerColumn = ownerColumn.String
 	ep.CORSOrigins = corsOrigins.String
 	ep.CORSMethods = corsMethods.String
 	ep.CORSHeaders = corsHeaders.String
@@ -1620,7 +1662,7 @@ func getTextColumns(siteDB *sql.DB, physTable string, ep *apiEndpoint) []string 
 // apiList handles GET /api/{path} — list rows with pagination and filtering.
 // Column filtering: ?column=value adds WHERE column = value.
 // Sorting: ?sort=column&order=asc|desc (default: id DESC).
-func (h *Handler) apiList(w http.ResponseWriter, r *http.Request, siteDB *sql.DB, physTable string, ep *apiEndpoint) {
+func (h *Handler) apiList(w http.ResponseWriter, r *http.Request, siteDB *sql.DB, physTable string, ep *apiEndpoint, rc *apiRequestContext) {
 	limit := 50
 	offset := 0
 	if l := r.URL.Query().Get("limit"); l != "" {
@@ -1682,6 +1724,12 @@ func (h *Handler) apiList(w http.ResponseWriter, r *http.Request, siteDB *sql.DB
 			}
 			whereClauses = append(whereClauses, "("+strings.Join(orClauses, " OR ")+")")
 		}
+	}
+
+	// Row-level security: inject owner filter.
+	if rc.OwnerFilter != "" {
+		whereClauses = append(whereClauses, ep.OwnerColumn+" = ?")
+		whereArgs = append(whereArgs, rc.OwnerFilterVal)
 	}
 
 	whereSQL := ""
@@ -1759,7 +1807,7 @@ func rowIDColumn(siteDB *sql.DB, physTable, rowID string) (col string, val inter
 }
 
 // apiGetOne handles GET /api/{path}/{id} — get single row.
-func (h *Handler) apiGetOne(w http.ResponseWriter, r *http.Request, siteDB *sql.DB, physTable, rowID string, ep *apiEndpoint) {
+func (h *Handler) apiGetOne(w http.ResponseWriter, r *http.Request, siteDB *sql.DB, physTable, rowID string, ep *apiEndpoint, rc *apiRequestContext) {
 	cols := h.visibleColumns(ep)
 	if cols == "" {
 		cols = "*"
@@ -1770,7 +1818,13 @@ func (h *Handler) apiGetOne(w http.ResponseWriter, r *http.Request, siteDB *sql.
 
 	lookupCol, lookupVal := rowIDColumn(siteDB, physTable, rowID)
 	query := fmt.Sprintf("SELECT %s FROM %s WHERE %s = ?", cols, physTable, lookupCol)
-	rows, err := siteDB.Query(query, lookupVal)
+	args := []interface{}{lookupVal}
+	// Row-level security: restrict to owned rows.
+	if rc.OwnerFilter != "" {
+		query += " AND " + ep.OwnerColumn + " = ?"
+		args = append(args, rc.OwnerFilterVal)
+	}
+	rows, err := siteDB.Query(query, args...)
 	if err != nil {
 		writePublicError(w, http.StatusInternalServerError, "query error")
 		return
@@ -1788,7 +1842,7 @@ func (h *Handler) apiGetOne(w http.ResponseWriter, r *http.Request, siteDB *sql.
 }
 
 // apiInsert handles POST /api/{path} — insert a row.
-func (h *Handler) apiInsert(w http.ResponseWriter, r *http.Request, siteDB *sql.DB, physTable string, ep *apiEndpoint, siteID int, endpointPath string) {
+func (h *Handler) apiInsert(w http.ResponseWriter, r *http.Request, siteDB *sql.DB, physTable string, ep *apiEndpoint, siteID int, endpointPath string, rc *apiRequestContext) {
 	var body map[string]interface{}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writePublicError(w, http.StatusBadRequest, "invalid JSON body")
@@ -1797,6 +1851,11 @@ func (h *Handler) apiInsert(w http.ResponseWriter, r *http.Request, siteDB *sql.
 
 	// Remove id field if provided (auto-generated).
 	delete(body, "id")
+
+	// Row-level security: auto-set owner column on insert.
+	if ep.OwnerColumn != "" && rc.AuthUserID > 0 {
+		body[ep.OwnerColumn] = rc.AuthUserID
+	}
 
 	// Process secure columns.
 	for col, kind := range ep.SecureCols {
@@ -1813,6 +1872,38 @@ func (h *Handler) apiInsert(w http.ResponseWriter, r *http.Request, siteDB *sql.
 	if len(body) == 0 {
 		writePublicError(w, http.StatusBadRequest, "no data provided")
 		return
+	}
+
+	// Validate that columns in the request body actually exist in the table.
+	rows, err := siteDB.Query(fmt.Sprintf("PRAGMA table_info(%s)", physTable))
+	if err == nil {
+		validCols := make(map[string]bool)
+		for rows.Next() {
+			var cid int
+			var name, colType string
+			var notNull int
+			var dfltValue sql.NullString
+			var pk int
+			if err := rows.Scan(&cid, &name, &colType, &notNull, &dfltValue, &pk); err == nil {
+				validCols[name] = true
+			}
+		}
+		rows.Close()
+		if len(validCols) > 0 {
+			for col := range body {
+				if col == "id" || col == "created_at" {
+					continue
+				}
+				if !validCols[col] {
+					slog.Warn("public API insert: unknown column ignored", "table", physTable, "column", col)
+					delete(body, col)
+				}
+			}
+			if len(body) == 0 {
+				writePublicError(w, http.StatusBadRequest, "no valid columns provided")
+				return
+			}
+		}
 	}
 
 	columns := make([]string, 0, len(body))
@@ -1874,7 +1965,7 @@ func (h *Handler) apiInsert(w http.ResponseWriter, r *http.Request, siteDB *sql.
 }
 
 // apiUpdate handles PUT /api/{path}/{id} — update a row.
-func (h *Handler) apiUpdate(w http.ResponseWriter, r *http.Request, siteDB *sql.DB, physTable, rowID string, ep *apiEndpoint, siteID int, endpointPath string) {
+func (h *Handler) apiUpdate(w http.ResponseWriter, r *http.Request, siteDB *sql.DB, physTable, rowID string, ep *apiEndpoint, siteID int, endpointPath string, rc *apiRequestContext) {
 	var body map[string]interface{}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writePublicError(w, http.StatusBadRequest, "invalid JSON body")
@@ -1914,6 +2005,11 @@ func (h *Handler) apiUpdate(w http.ResponseWriter, r *http.Request, siteDB *sql.
 	values = append(values, lookupVal)
 
 	query := fmt.Sprintf("UPDATE %s SET %s WHERE %s = ?", physTable, strings.Join(setClauses, ", "), lookupCol)
+	// Row-level security: restrict update to owned rows.
+	if rc.OwnerFilter != "" {
+		query += " AND " + ep.OwnerColumn + " = ?"
+		values = append(values, rc.OwnerFilterVal)
+	}
 	result, err := sqliteretry.Exec(siteDB, query, values...)
 	if err != nil {
 		slog.Error("public API update failed", "table", physTable, "error", err)
@@ -1959,10 +2055,16 @@ func (h *Handler) apiUpdate(w http.ResponseWriter, r *http.Request, siteDB *sql.
 }
 
 // apiDelete handles DELETE /api/{path}/{id} — delete a row.
-func (h *Handler) apiDelete(w http.ResponseWriter, siteDB *sql.DB, physTable, rowID string, _ *apiEndpoint, siteID int, endpointPath string) {
+func (h *Handler) apiDelete(w http.ResponseWriter, siteDB *sql.DB, physTable, rowID string, ep *apiEndpoint, siteID int, endpointPath string, rc *apiRequestContext) {
 	lookupCol, lookupVal := rowIDColumn(siteDB, physTable, rowID)
 	query := fmt.Sprintf("DELETE FROM %s WHERE %s = ?", physTable, lookupCol)
-	result, err := sqliteretry.Exec(siteDB, query, lookupVal)
+	args := []interface{}{lookupVal}
+	// Row-level security: restrict delete to owned rows.
+	if rc.OwnerFilter != "" {
+		query += " AND " + ep.OwnerColumn + " = ?"
+		args = append(args, rc.OwnerFilterVal)
+	}
+	result, err := sqliteretry.Exec(siteDB, query, args...)
 	if err != nil {
 		writePublicError(w, http.StatusInternalServerError, "delete failed")
 		return

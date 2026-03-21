@@ -46,6 +46,7 @@ func (t *SchedulerTool) Guide() string {
   - {"type":"count_rows","table":"sessions"} — count rows in a table
   - {"type":"truncate","table":"temp_data"} — delete all rows from a table
   - {"type":"sql","query":"DELETE FROM logs WHERE level='debug'","params":[]} — run parameterized SQL (advanced: mutations bypass validation — prefer delete_stale or prompt-based tasks for write operations)
+  - {"type":"trigger_event","event_type":"scheduled.cleanup","payload":{"task":"cleanup"}} — publish an event that triggers matching actions (bridges scheduler → actions)
 - Use run_now action to manually trigger a task immediately.`
 }
 

@@ -28,8 +28,13 @@ export async function renderSiteWebhooks(container, siteId) {
   try {
     const webhooks = await get(`/admin/api/sites/${siteId}/webhooks`);
 
+    body.appendChild(h('button', {
+      className: 'btn btn--primary btn--sm mb-3',
+      onClick: () => showCreateWebhookModal(container, siteId),
+    }, [h('span', { innerHTML: icon('plus') }), ' Create Webhook']));
+
     if (webhooks.length === 0) {
-      body.appendChild(emptyState('No webhooks configured. The AI can create webhooks via chat.'));
+      body.appendChild(emptyState('No webhooks configured.'));
       return;
     }
 
@@ -154,6 +159,31 @@ async function showWebhookDetail(siteId, wh) {
       }
     }
 
+    // Test button for outgoing webhooks.
+    if (detail.direction === 'outgoing' && detail.url) {
+      const testBtn = h('button', {
+        className: 'btn btn--sm btn--secondary mt-3',
+        onClick: async (e) => {
+          e.target.disabled = true;
+          e.target.textContent = 'Sending...';
+          try {
+            const res = await fetch(detail.url, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ event: 'test', webhook: detail.name, timestamp: new Date().toISOString() }),
+            });
+            toast.success(`Test sent \u2014 response: ${res.status}`);
+          } catch (err) {
+            toast.error('Test failed: ' + err.message);
+          } finally {
+            e.target.disabled = false;
+            e.target.textContent = 'Send Test';
+          }
+        },
+      }, 'Send Test');
+      content.appendChild(testBtn);
+    }
+
     // cURL example for incoming
     if (detail.direction === 'incoming') {
       content.appendChild(h('div', { className: 'mt-3' }, [
@@ -171,4 +201,53 @@ async function showWebhookDetail(siteId, wh) {
     clear(content);
     content.appendChild(h('p', { className: 'text-danger' }, 'Failed to load details: ' + err.message));
   }
+}
+
+function showCreateWebhookModal(container, siteId) {
+  const nameInput = h('input', { className: 'input', placeholder: 'e.g. stripe-webhook' });
+  const dirSelect = h('select', { className: 'input', onChange: () => {
+    urlGroup.style.display = dirSelect.value === 'outgoing' ? '' : 'none';
+  }}, [
+    h('option', { value: 'incoming' }, 'Incoming'),
+    h('option', { value: 'outgoing' }, 'Outgoing'),
+  ]);
+  const urlInput = h('input', { className: 'input', placeholder: 'https://...' });
+  const secretInput = h('input', { className: 'input', placeholder: 'HMAC signing secret (optional)' });
+  const eventsInput = h('input', { className: 'input', placeholder: 'data.insert, data.update, payment.completed' });
+  const urlGroup = h('div', { className: 'form-group', style: { display: 'none' } }, [h('label', {}, 'URL'), urlInput]);
+
+  const form = h('div', {}, [
+    h('div', { className: 'form-group' }, [h('label', {}, 'Name'), nameInput]),
+    h('div', { className: 'form-group' }, [h('label', {}, 'Direction'), dirSelect]),
+    urlGroup,
+    h('div', { className: 'form-group' }, [h('label', {}, 'Secret'), secretInput]),
+    h('div', { className: 'form-group' }, [h('label', {}, 'Event Subscriptions (comma-separated)'), eventsInput]),
+  ]);
+
+  modal.show('Create Webhook', form, [
+    { label: 'Cancel', onClick: () => {} },
+    {
+      label: 'Create',
+      className: 'btn btn--primary',
+      onClick: async () => {
+        const name = nameInput.value.trim();
+        if (!name) { toast.error('Name is required'); return false; }
+        const events = eventsInput.value.split(',').map(e => e.trim()).filter(Boolean);
+        try {
+          await post(`/admin/api/sites/${siteId}/webhooks`, {
+            name,
+            direction: dirSelect.value,
+            url: urlInput.value.trim(),
+            secret: secretInput.value.trim(),
+            events,
+          });
+          toast.success('Webhook created');
+          renderSiteWebhooks(container, siteId);
+        } catch (err) {
+          toast.error(err.message);
+          return false;
+        }
+      },
+    },
+  ]);
 }

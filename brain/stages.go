@@ -9,6 +9,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -48,6 +49,8 @@ func buildToolSetForPlan(plan *Plan) map[string]bool {
 		"manage_communication": true, // always available for owner comms
 		"manage_secrets":       true, // cheap; needed for API keys, email, payments
 		"manage_providers":     true, // cheap; needed for email, payment, etc.
+		"manage_testing":       true, // self-testing for built endpoints/pages
+		"manage_plan":          true, // mid-build plan amendments
 		"make_http_request":    true, // cheap read-only; needed for CDN/API verification
 	}
 	if len(plan.Actions) > 0 {
@@ -429,6 +432,18 @@ func (w *PipelineWorker) runBuild(ctx context.Context) (PipelineStage, error) {
 	toolDefs := cfg.BuildToolDefs(w.deps.ToolRegistry, dynTools)
 	_, _, totalTokens, totalToolCalls, loopErr := w.runToolLoop(ctx, provider, modelID, prompt, messages, toolDefs, maxIter, cfg.MaxTokens, cfg.Temperature)
 
+	// If the tool loop was paused for owner input (e.g., secret request),
+	// return StageBuild so the pipeline re-enters BUILD after the owner responds.
+	// Checkpoint was already saved by runToolLoop before returning.
+	if errors.Is(loopErr, ErrPipelinePaused) {
+		w.buildProgress = nil
+		w.anchors = nil
+		w.systemPromptUpdater = nil
+		w.publishBrainMessage("Build paused — waiting for owner input.")
+		sr.complete(totalTokens, totalToolCalls)
+		return StageBuild, fmt.Errorf("paused: awaiting owner answers")
+	}
+
 	// Clear checkpoint after successful build (no longer needed).
 	w.siteDB.ExecWrite("UPDATE ho_pipeline_state SET checkpoint_messages = NULL WHERE id = 1")
 
@@ -676,6 +691,12 @@ func extractCRUDPath(ref string) string {
 	// Extract base path (first segment only, ignore /id, /chat, /complete, etc.)
 	segments := strings.SplitN(urlPath, "/", 2)
 	basePath := segments[0]
+
+	// Skip if the base path itself is a known sub-route keyword (e.g. /api/upload/foo
+	// is an upload endpoint reference, not a CRUD resource named "upload").
+	if basePath == "chat" || basePath == "complete" || basePath == "stream" || basePath == "upload" || basePath == "ws" || basePath == "rooms" {
+		return ""
+	}
 
 	// Skip if the second segment is a known sub-route (LLM, upload, stream, ws).
 	if len(segments) > 1 {

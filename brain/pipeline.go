@@ -82,6 +82,13 @@ type PipelineWorker struct {
 	// If non-nil, it may return a new system prompt (e.g. to drop the Build
 	// Guide after infrastructure is complete). Cleared after build.
 	systemPromptUpdater func(current string) string
+
+	// currentProviderID tracks the active LLM provider for fallback lookups.
+	currentProviderID int
+
+	// pauseRequested is set by executeToolCalls when a tool (e.g., manage_communication
+	// with type=secret) signals that the pipeline should pause for owner input.
+	pauseRequested bool
 }
 
 // anchorStore holds structured summaries of key build artifacts so they
@@ -92,6 +99,7 @@ type anchorStore struct {
 	cssReference      string            // latest structured CSS reference
 	jsReference       string            // latest structured JS API reference
 	lastPageEndpoints string            // endpoint set of the last built page (for diff detection)
+	layoutSummary     string            // compact layout structure reminder (header/footer/nav presence)
 
 	// Quality & consistency features.
 	componentGroups string            // CSS component families (card: .card, .card-header, ...)
@@ -558,7 +566,42 @@ func (w *PipelineWorker) monitoringInterval() time.Duration {
 // --- LLM execution helpers ---
 
 // callWithRetry makes a single LLM call with retry/backoff for transient errors.
+// After exhausting retries on the primary provider, it attempts a single fallback
+// to an alternative provider if one is configured.
 func (w *PipelineWorker) callWithRetry(ctx context.Context, lp llm.Provider, req llm.CompletionRequest) (*llm.CompletionResponse, error) {
+	resp, err := w.callWithRetryOnProvider(ctx, lp, req)
+	if err == nil {
+		return resp, nil
+	}
+	if ctx.Err() != nil {
+		return nil, err
+	}
+
+	// Try fallback provider if primary exhausted retries.
+	fallbackProvider, fallbackModelID, fbErr := w.getFallbackProvider()
+	if fbErr != nil {
+		return nil, err // return original error, no fallback available
+	}
+
+	w.logger.Warn("primary provider failed, trying fallback",
+		"primary_error", err, "fallback_provider", fallbackProvider.Name(), "fallback_model", fallbackModelID)
+
+	// Use fallback model ID in the request.
+	fbReq := req
+	fbReq.Model = fallbackModelID
+
+	resp, fbCallErr := w.callWithRetryOnProvider(ctx, fallbackProvider, fbReq)
+	if fbCallErr != nil {
+		w.logger.Warn("fallback provider also failed", "error", fbCallErr)
+		return nil, err // return original error
+	}
+
+	w.logger.Info("fallback provider succeeded", "provider", fallbackProvider.Name(), "model", fallbackModelID)
+	return resp, nil
+}
+
+// callWithRetryOnProvider attempts LLM calls with retry/backoff on a single provider.
+func (w *PipelineWorker) callWithRetryOnProvider(ctx context.Context, lp llm.Provider, req llm.CompletionRequest) (*llm.CompletionResponse, error) {
 	var resp *llm.CompletionResponse
 	var err error
 	for attempt := 0; attempt < maxLLMRetries; attempt++ {
@@ -724,6 +767,16 @@ func (w *PipelineWorker) runToolLoop(ctx context.Context, provider llm.Provider,
 		messages = w.executeToolCalls(ctx, resp.ToolCalls, messages, allowedTools)
 		totalToolCalls += len(resp.ToolCalls)
 
+		// Check if any tool requested a pipeline pause (e.g., secret question asked
+		// during BUILD). When detected, save checkpoint and return sentinel error.
+		if w.pauseRequested {
+			w.pauseRequested = false
+			w.saveCheckpointMessages(messages)
+			PausePipeline(w.siteDB, PauseReasonOwnerAnswers)
+			w.logger.Info("tool requested pipeline pause, saving checkpoint and pausing")
+			return lastContent, lastModel, totalTokens, totalToolCalls, ErrPipelinePaused
+		}
+
 		// Early termination: once all plan items are built, allow a small grace
 		// window for polish (e.g. seed data, verify), then force stop to prevent
 		// the LLM from endlessly reading/re-saving in a fidget loop.
@@ -888,12 +941,13 @@ func (w *PipelineWorker) executeToolCalls(ctx context.Context, toolCalls []llm.T
 			defer func() { <-sem }()
 
 			toolCtx := &tools.ToolContext{
-				DB:        w.siteDB.Writer(),
-				GlobalDB:  w.deps.DB.DB,
-				SiteID:    w.siteID,
-				Logger:    w.logger,
-				Bus:       w.deps.Bus,
-				Encryptor: w.deps.Encryptor,
+				DB:         w.siteDB.Writer(),
+				GlobalDB:   w.deps.DB.DB,
+				SiteID:     w.siteID,
+				Logger:     w.logger,
+				Bus:        w.deps.Bus,
+				Encryptor:  w.deps.Encryptor,
+				PublicPort: w.deps.PublicPort,
 			}
 
 			toolExecCtx, toolCancel := context.WithTimeout(ctx, toolTimeout)
@@ -960,6 +1014,18 @@ func (w *PipelineWorker) executeToolCalls(ctx context.Context, toolCalls []llm.T
 
 		if r.toolResultSucceeded() {
 			messages = w.injectAnchors(r.tc.Name, r.args, messages)
+		}
+
+		// Detect secret/question requests from manage_communication during BUILD.
+		// When the brain asks a question (especially type=secret), signal the
+		// pipeline to pause so the owner can respond.
+		if r.toolResultSucceeded() && r.tc.Name == "manage_communication" {
+			if action, _ := r.args["action"].(string); action == "ask" {
+				if qType, _ := r.args["type"].(string); qType == "secret" {
+					w.logger.Info("secret question asked during build, requesting pause")
+					w.pauseRequested = true
+				}
+			}
 		}
 	}
 	return messages
@@ -1042,6 +1108,37 @@ func (w *PipelineWorker) injectAnchors(toolName string, args map[string]interfac
 			}
 		}
 
+	case "manage_layout":
+		if action == "save" {
+			template, _ := args["template"].(string)
+			if template != "" {
+				lower := strings.ToLower(template)
+				hasHeader := strings.Contains(lower, "<header")
+				hasFooter := strings.Contains(lower, "<footer")
+				hasNav := strings.Contains(lower, "<nav")
+				var parts []string
+				if hasHeader {
+					parts = append(parts, "has <header>")
+				}
+				if hasNav {
+					parts = append(parts, "has <nav>")
+				}
+				if hasFooter {
+					parts = append(parts, "has <footer>")
+				}
+				var summary string
+				if len(parts) == 0 {
+					summary = "[ANCHOR] Layout is chromeless (no header/nav/footer). Pages fill the viewport — do NOT add <header>, <nav>, or <footer> in page content."
+				} else {
+					summary = "[ANCHOR] Layout template provides: " + strings.Join(parts, ", ") + ". Do NOT duplicate these in page content — they are already in the layout."
+				}
+				messages = appendAnchorIfNew(messages, llm.Message{Role: llm.RoleUser, Content: summary})
+				if w.anchors != nil {
+					w.anchors.layoutSummary = summary
+				}
+			}
+		}
+
 	case "manage_pages":
 		if action == "save" && w.anchors != nil {
 			path, _ := args["path"].(string)
@@ -1101,6 +1198,12 @@ func (w *PipelineWorker) buildPageContextRefresh() string {
 		b.WriteString("**Quality check:** Before moving to the next item, verify the page you just built: Does it have clear visual hierarchy? Do interactive elements work (buttons, links, forms)? Does it use .container for alignment? Is it consistent with earlier pages? If anything is off, patch it now.\n\n")
 	}
 	hasContent = true
+
+	// --- Layout structure reminder ---
+	// Re-inject what the layout provides so pages don't duplicate header/footer/nav.
+	if w.anchors.layoutSummary != "" {
+		b.WriteString(w.anchors.layoutSummary + "\n\n")
+	}
 
 	// --- Aesthetic re-anchoring (every 3 pages) ---
 	// Re-inject design intent and established patterns to prevent drift.
@@ -1373,7 +1476,7 @@ func buildEndpointAnchor(args map[string]interface{}) string {
 	case "create_upload":
 		summary = fmt.Sprintf("[ANCHOR] Upload POST /api/%s/upload -> {url, filename, size, type}.", path)
 	case "create_llm":
-		summary = fmt.Sprintf("[ANCHOR] LLM POST /api/%s/chat (SSE) and POST /api/%s/complete (JSON).", path, path)
+		summary = fmt.Sprintf("[ANCHOR] LLM POST /api/%s/chat (SSE) and POST /api/%s/complete (JSON). No CRUD — use a separate create_api endpoint if page also needs data listing.", path, path)
 		if streaming, ok := args["streaming"].(bool); ok && !streaming {
 			summary += " Plan says streaming=false: page JS should use /complete (JSON), not /chat (SSE)."
 		} else {
@@ -1911,6 +2014,32 @@ func (w *PipelineWorker) executeNativeAction(ctx context.Context, actionJSON str
 			actionErr = fmt.Errorf("sql action only supports SELECT, INSERT, UPDATE, DELETE")
 		}
 
+	case "trigger_event":
+		// Publish an event to the bus so actions subscribed to that event_type fire.
+		// Config: {"type":"trigger_event", "event_type":"scheduled.cleanup", "payload":{"task":"cleanup"}}
+		var triggerCfg struct {
+			Type      string                 `json:"type"`
+			EventType string                 `json:"event_type"`
+			Payload   map[string]interface{} `json:"payload"`
+		}
+		if err := json.Unmarshal([]byte(actionJSON), &triggerCfg); err != nil {
+			actionErr = fmt.Errorf("trigger_event: invalid config: %w", err)
+			break
+		}
+		if triggerCfg.EventType == "" {
+			actionErr = fmt.Errorf("trigger_event: event_type is required")
+			break
+		}
+		if triggerCfg.Payload == nil {
+			triggerCfg.Payload = map[string]interface{}{}
+		}
+		triggerCfg.Payload["source"] = "scheduler"
+		triggerCfg.Payload["task_id"] = taskID
+		if w.deps.Bus != nil {
+			w.deps.Bus.Publish(events.NewEvent(events.EventType(triggerCfg.EventType), w.siteID, triggerCfg.Payload))
+		}
+		result = fmt.Sprintf("published event '%s'", triggerCfg.EventType)
+
 	default:
 		actionErr = fmt.Errorf("unknown native action type: %s", action.Type)
 	}
@@ -2024,7 +2153,20 @@ func (w *PipelineWorker) getProvider() (llm.Provider, string, error) {
 		}
 	}
 
+	p, modelID, err := w.resolveProvider(model, providerRow)
+	if err != nil {
+		return nil, "", err
+	}
+
+	// Store the current provider ID for fallback lookup.
+	w.currentProviderID = providerRow.ID
+	return p, modelID, nil
+}
+
+// resolveProvider turns a model+provider row into a live llm.Provider.
+func (w *PipelineWorker) resolveProvider(model *models.LLMModel, providerRow *models.LLMProvider) (llm.Provider, string, error) {
 	var apiKey string
+	var err error
 	if providerRow.APIKeyEncrypted != nil && *providerRow.APIKeyEncrypted != "" {
 		apiKey, err = w.deps.Encryptor.Decrypt(*providerRow.APIKeyEncrypted)
 		if err != nil {
@@ -2055,6 +2197,19 @@ func (w *PipelineWorker) getProvider() (llm.Provider, string, error) {
 		return nil, "", fmt.Errorf("provider %q not available: %w", providerRow.Name, err)
 	}
 	return p, model.ModelID, nil
+}
+
+// getFallbackProvider returns an alternative provider on a different LLM provider
+// than the current one. Returns nil if no fallback is available.
+func (w *PipelineWorker) getFallbackProvider() (llm.Provider, string, error) {
+	if w.currentProviderID == 0 {
+		return nil, "", fmt.Errorf("no current provider to fall back from")
+	}
+	model, providerRow, err := models.GetFallbackModel(w.deps.DB.DB, w.currentProviderID)
+	if err != nil {
+		return nil, "", fmt.Errorf("no fallback provider available: %w", err)
+	}
+	return w.resolveProvider(model, providerRow)
 }
 
 // --- Persistence helpers ---

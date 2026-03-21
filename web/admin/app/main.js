@@ -269,11 +269,15 @@ function connectSSE() {
   sse.on('question.answered', (data) => {
     if (data?.payload) {
       state.set('questionAnswered', { site_id: data.site_id, ...(data.payload || {}) });
-      // Decrement pending question count
-      const count = Math.max(0, (state.get('pendingQuestions') || 0) - 1);
-      state.set('pendingQuestions', count);
+      // Reset to 0 — this event only fires when ALL pending questions are answered.
+      state.set('pendingQuestions', 0);
     }
   });
+
+  // Initialize pending question count from server (SSE only handles deltas).
+  get('/admin/api/questions?status=pending').then(questions => {
+    if (Array.isArray(questions)) state.set('pendingQuestions', questions.length);
+  }).catch(() => { /* non-critical */ });
 
   // Brain activity events — routed to state store for chat view consumption.
   sse.on('brain.message', (data) => {

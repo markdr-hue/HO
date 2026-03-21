@@ -6,6 +6,7 @@
 package admin
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -176,4 +177,78 @@ func (h *SiteFilesHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+}
+
+// Content serves the raw content of a file.
+func (h *SiteFilesHandler) Content(w http.ResponseWriter, r *http.Request) {
+	_, siteDB := requireSiteDB(w, r, h.deps.SiteDBManager)
+	if siteDB == nil {
+		return
+	}
+
+	fileID, err := strconv.Atoi(chi.URLParam(r, "fileID"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid file ID")
+		return
+	}
+
+	var storagePath string
+	err = siteDB.QueryRow(
+		"SELECT storage_path FROM ho_files WHERE id = ?",
+		fileID,
+	).Scan(&storagePath)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "file not found")
+		return
+	}
+
+	data, err := os.ReadFile(storagePath)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "file not found on disk")
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Write(data)
+}
+
+// UpdateContent updates the content of a text file on disk.
+func (h *SiteFilesHandler) UpdateContent(w http.ResponseWriter, r *http.Request) {
+	_, siteDB := requireSiteDB(w, r, h.deps.SiteDBManager)
+	if siteDB == nil {
+		return
+	}
+
+	fileID, err := strconv.Atoi(chi.URLParam(r, "fileID"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid file ID")
+		return
+	}
+
+	var req struct {
+		Content string `json:"content"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	var storagePath string
+	err = siteDB.QueryRow(
+		"SELECT storage_path FROM ho_files WHERE id = ?",
+		fileID,
+	).Scan(&storagePath)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "file not found")
+		return
+	}
+
+	if err := os.WriteFile(storagePath, []byte(req.Content), 0644); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to write file")
+		return
+	}
+
+	siteDB.ExecWrite("UPDATE ho_files SET size = ? WHERE id = ?", len(req.Content), fileID)
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{"updated": fileID})
 }

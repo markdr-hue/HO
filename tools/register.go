@@ -76,4 +76,10 @@ func RegisterAll(r *Registry) {
 
 	// Memory (store, recall, list, forget)
 	r.Register(&MemoryTool{})
+
+	// Testing (test_endpoint, test_auth_flow, test_page)
+	r.Register(&TestingTool{})
+
+	// Plan Amendments (add_table, add_endpoint, get_plan)
+	r.Register(&PlanAmendTool{})
 }

@@ -267,6 +267,37 @@ func (h *SiteTasksHandler) Update(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]interface{}{"id": taskID, "status": "updated"})
 }
 
+// RunNow triggers immediate execution of a scheduled task by setting next_run to now.
+func (h *SiteTasksHandler) RunNow(w http.ResponseWriter, r *http.Request) {
+	_, siteDB := requireSiteDB(w, r, h.deps.SiteDBManager)
+	if siteDB == nil {
+		return
+	}
+
+	taskID, err := strconv.Atoi(chi.URLParam(r, "taskID"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid task ID")
+		return
+	}
+
+	res, err := siteDB.ExecWrite(
+		"UPDATE ho_scheduled_tasks SET next_run = CURRENT_TIMESTAMP, is_enabled = 1 WHERE id = ?",
+		taskID,
+	)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to trigger task")
+		return
+	}
+
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		writeError(w, http.StatusNotFound, "task not found")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{"triggered": taskID})
+}
+
 // TaskRuns returns recent runs for a scheduled task.
 func (h *SiteTasksHandler) TaskRuns(w http.ResponseWriter, r *http.Request) {
 	_, siteDB := requireSiteDB(w, r, h.deps.SiteDBManager)

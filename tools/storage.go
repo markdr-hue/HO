@@ -1468,13 +1468,17 @@ func (t *FilesTool) executeSearch(ctx *ToolContext, args map[string]interface{})
 	}
 
 	likeQuery := "%" + query + "%"
-	rows, err := ctx.DB.Query(
-		fmt.Sprintf(`SELECT filename, scope, LENGTH(content) as size,
-			CASE WHEN filename LIKE ? THEN 'filename' ELSE 'content' END as match_type,
-			CASE WHEN content LIKE ? THEN SUBSTR(content, MAX(1, INSTR(LOWER(content), LOWER(?))-50), 150) ELSE '' END as snippet
-		FROM %s WHERE filename LIKE ? OR content LIKE ? ORDER BY filename LIMIT 20`, table),
-		likeQuery, likeQuery, query, likeQuery, likeQuery,
-	)
+
+	// ho_assets has scope and alt_text; ho_files has description. Neither has a content column.
+	var sqlQuery string
+	if storage == "files" {
+		sqlQuery = fmt.Sprintf(
+			`SELECT filename, description, size FROM %s WHERE filename LIKE ? OR description LIKE ? ORDER BY filename LIMIT 20`, table)
+	} else {
+		sqlQuery = fmt.Sprintf(
+			`SELECT filename, scope, size FROM %s WHERE filename LIKE ? OR alt_text LIKE ? ORDER BY filename LIMIT 20`, table)
+	}
+	rows, err := ctx.DB.Query(sqlQuery, likeQuery, likeQuery)
 	if err != nil {
 		return nil, fmt.Errorf("search failed: %w", err)
 	}
@@ -1482,17 +1486,15 @@ func (t *FilesTool) executeSearch(ctx *ToolContext, args map[string]interface{})
 
 	var results []map[string]interface{}
 	for rows.Next() {
-		var filename, scope, matchType, snippet string
+		var filename, extra string
 		var size int
-		if err := rows.Scan(&filename, &scope, &size, &matchType, &snippet); err != nil {
+		if err := rows.Scan(&filename, &extra, &size); err != nil {
 			continue
 		}
 		results = append(results, map[string]interface{}{
-			"filename":   filename,
-			"scope":      scope,
-			"size":       size,
-			"match_type": matchType,
-			"snippet":    snippet,
+			"filename": filename,
+			"scope":    extra,
+			"size":     size,
 		})
 	}
 

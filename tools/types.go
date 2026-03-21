@@ -24,13 +24,14 @@ type Tool interface {
 
 // ToolContext carries dependencies into tool execution.
 type ToolContext struct {
-	Ctx       context.Context // cancellation/timeout context from the pipeline
-	DB        *sql.DB         // site-scoped database
-	GlobalDB  *sql.DB         // global database (users, providers, sites)
-	SiteID    int             // kept for file paths and logging, not for queries
-	Logger    *slog.Logger
-	Bus       *events.Bus
-	Encryptor *security.Encryptor
+	Ctx        context.Context // cancellation/timeout context from the pipeline
+	DB         *sql.DB         // site-scoped database
+	GlobalDB   *sql.DB         // global database (users, providers, sites)
+	SiteID     int             // kept for file paths and logging, not for queries
+	Logger     *slog.Logger
+	Bus        *events.Bus
+	Encryptor  *security.Encryptor
+	PublicPort int             // public server port for self-testing (default 5000)
 }
 
 // Result is the standard return value from a tool execution.

@@ -42,6 +42,81 @@ var secureColumnKinds = map[string]string{
 	"ENCRYPTED": "encrypt",
 }
 
+// schemaColumnDef holds a parsed column definition with optional constraints.
+type schemaColumnDef struct {
+	Name     string
+	Type     string // logical type (TEXT, INTEGER, REAL, BOOLEAN, PASSWORD, ENCRYPTED)
+	SQLType  string // mapped SQLite type
+	NotNull  bool
+	Unique   bool
+	Default  string // raw SQL default expression (e.g. "'draft'" or "0")
+	Check    string // raw SQL check expression (e.g. "> 0")
+	IsSecure bool
+	Kind     string // "hash" or "encrypt" for secure columns
+}
+
+// parseColumnDef parses a column value that is either a simple string type
+// ("TEXT") or an object with constraints ({"type":"TEXT","not_null":true,...}).
+func parseColumnDef(name string, raw interface{}) (*schemaColumnDef, error) {
+	cd := &schemaColumnDef{Name: name}
+
+	switch v := raw.(type) {
+	case string:
+		// Simple format: "TEXT"
+		cd.Type = strings.ToUpper(v)
+	case map[string]interface{}:
+		// Extended format: {"type":"TEXT","not_null":true,"unique":true,"default":"'draft'","check":"> 0"}
+		typeStr, _ := v["type"].(string)
+		if typeStr == "" {
+			return nil, fmt.Errorf("column %s: 'type' is required in object format", name)
+		}
+		cd.Type = strings.ToUpper(typeStr)
+		if nn, ok := v["not_null"].(bool); ok {
+			cd.NotNull = nn
+		}
+		if uq, ok := v["unique"].(bool); ok {
+			cd.Unique = uq
+		}
+		if def, ok := v["default"].(string); ok && def != "" {
+			cd.Default = def
+		}
+		if chk, ok := v["check"].(string); ok && chk != "" {
+			cd.Check = chk
+		}
+	default:
+		return nil, fmt.Errorf("column %s: type must be a string or object", name)
+	}
+
+	sqlType, allowed := allowedColumnTypes[cd.Type]
+	if !allowed {
+		return nil, fmt.Errorf("unsupported column type: %s (allowed: TEXT, INTEGER, REAL, BOOLEAN, PASSWORD, ENCRYPTED)", cd.Type)
+	}
+	cd.SQLType = sqlType
+
+	if kind, isSecure := secureColumnKinds[cd.Type]; isSecure {
+		cd.IsSecure = true
+		cd.Kind = kind
+	}
+
+	return cd, nil
+}
+
+// columnSQL returns the SQL fragment for a column definition including constraints.
+func (cd *schemaColumnDef) columnSQL() string {
+	var parts []string
+	parts = append(parts, cd.Name, cd.SQLType)
+	if cd.NotNull {
+		parts = append(parts, "NOT NULL")
+	}
+	if cd.Default != "" {
+		parts = append(parts, "DEFAULT "+cd.Default)
+	}
+	if cd.Check != "" {
+		parts = append(parts, fmt.Sprintf("CHECK (%s %s)", cd.Name, cd.Check))
+	}
+	return strings.Join(parts, " ")
+}
+
 // systemTables are internal tables that the LLM must not create, alter, or drop.
 var systemTables = map[string]bool{
 	"ho_pages": true, "ho_page_versions": true, "ho_assets": true, "ho_files": true,
@@ -160,13 +235,19 @@ type SchemaTool struct{}
 
 func (t *SchemaTool) Name() string { return "manage_schema" }
 func (t *SchemaTool) Description() string {
-	return "Create, alter, describe, list, or drop dynamic tables. Supports PASSWORD (bcrypt) and ENCRYPTED (AES) column types, FTS5 full-text search via searchable_columns."
+	return "Create, alter, describe, list, drop, or index dynamic tables. Supports PASSWORD (bcrypt) and ENCRYPTED (AES) column types, FTS5 full-text search via searchable_columns."
 }
 
 func (t *SchemaTool) Guide() string {
 	return `### Dynamic Tables (manage_schema)
 - Column types: TEXT, INTEGER, REAL, BOOLEAN, PASSWORD (bcrypt), ENCRYPTED (AES).
 - id and created_at columns are auto-added — do NOT include them.
+- Columns accept a simple string ("TEXT") or an object for constraints:
+  {"type":"TEXT", "not_null":true, "unique":true, "default":"'draft'", "check":"> 0"}
+  - not_null: adds NOT NULL constraint
+  - unique: creates a UNIQUE index on the column
+  - default: SQL default value (wrap strings in single quotes: "'draft'")
+  - check: SQL CHECK expression applied to the column (e.g. "> 0", "IN ('a','b','c')")
 - searchable_columns enables FTS5 full-text search (used with manage_data search action).
 - PASSWORD columns auto-hash with bcrypt. ENCRYPTED columns auto-encrypt with AES.
 - Reserved names (cannot be used): ho_pages, ho_assets, ho_questions, ho_answers, ho_memory, ho_secrets, ho_analytics, ho_layouts, ho_files, ho_chat_messages, ho_brain_log, ho_dynamic_tables, ho_api_endpoints, ho_auth_endpoints, ho_webhooks, ho_scheduled_tasks. Use descriptive prefixes (e.g. survey_questions, quiz_answers).
@@ -188,11 +269,11 @@ func (t *SchemaTool) Parameters() map[string]interface{} {
 			},
 			"columns": map[string]interface{}{
 				"type":        "object",
-				"description": "Column definitions as {name: type} for create. Types: TEXT, INTEGER, REAL, BOOLEAN, PASSWORD (auto-hashed), ENCRYPTED (auto-encrypted)",
+				"description": `Column definitions as {name: type_or_object}. Simple: {"email":"TEXT"}. With constraints: {"email":{"type":"TEXT","not_null":true,"unique":true,"default":"'value'","check":"> 0"}}. Types: TEXT, INTEGER, REAL, BOOLEAN, PASSWORD (auto-hashed), ENCRYPTED (auto-encrypted)`,
 			},
 			"add_columns": map[string]interface{}{
 				"type":        "object",
-				"description": "Columns to add for alter: {name: type}",
+				"description": `Columns to add for alter: {name: type_or_object}. Same format as columns — supports simple strings or objects with constraints.`,
 			},
 			"drop_columns": map[string]interface{}{
 				"type":        "array",
@@ -260,6 +341,7 @@ func (t *SchemaTool) create(ctx *ToolContext, args map[string]interface{}) (*Res
 
 	// Validate and build column definitions, track secure columns.
 	var colDefs []string
+	var uniqueCols []string
 	secureCols := map[string]string{}
 
 	for colName, colTypeRaw := range columnsRaw {
@@ -270,20 +352,19 @@ func (t *SchemaTool) create(ctx *ToolContext, args map[string]interface{}) (*Res
 		if !validColumnName.MatchString(colName) {
 			return &Result{Success: false, Error: fmt.Sprintf("invalid column name: %s", colName)}, nil
 		}
-		colType, ok := colTypeRaw.(string)
-		if !ok {
-			return &Result{Success: false, Error: fmt.Sprintf("column type must be a string for %s", colName)}, nil
-		}
-		colType = strings.ToUpper(colType)
-		sqlType, allowed := allowedColumnTypes[colType]
-		if !allowed {
-			return &Result{Success: false, Error: fmt.Sprintf("unsupported column type: %s (allowed: TEXT, INTEGER, REAL, BOOLEAN, PASSWORD, ENCRYPTED)", colType)}, nil
-		}
-		colDefs = append(colDefs, fmt.Sprintf("%s %s", colName, sqlType))
 
-		// Track secure columns.
-		if kind, isSecure := secureColumnKinds[colType]; isSecure {
-			secureCols[colName] = kind
+		cd, err := parseColumnDef(colName, colTypeRaw)
+		if err != nil {
+			return &Result{Success: false, Error: err.Error()}, nil
+		}
+
+		colDefs = append(colDefs, cd.columnSQL())
+
+		if cd.IsSecure {
+			secureCols[colName] = cd.Kind
+		}
+		if cd.Unique {
+			uniqueCols = append(uniqueCols, colName)
 		}
 	}
 
@@ -315,6 +396,15 @@ func (t *SchemaTool) create(ctx *ToolContext, args map[string]interface{}) (*Res
 		return nil, fmt.Errorf("recording dynamic table: %w", err)
 	}
 
+	// Create UNIQUE indexes for columns marked unique.
+	for _, col := range uniqueCols {
+		idxName := fmt.Sprintf("idx_%s_%s_unique", physicalName, col)
+		idxSQL := fmt.Sprintf("CREATE UNIQUE INDEX IF NOT EXISTS %s ON %s (%s)", idxName, physicalName, col)
+		if _, err := ctx.DB.Exec(idxSQL); err != nil {
+			return nil, fmt.Errorf("creating unique index on %s: %w", col, err)
+		}
+	}
+
 	// Create FTS5 full-text search index if searchable_columns provided.
 	var searchableCols []string
 	if rawSearchable, ok := args["searchable_columns"].([]interface{}); ok && len(rawSearchable) > 0 {
@@ -323,9 +413,18 @@ func (t *SchemaTool) create(ctx *ToolContext, args map[string]interface{}) (*Res
 			if !ok || !validColumnName.MatchString(colName) {
 				continue
 			}
-			// Verify the column exists and is TEXT type.
-			if colType, exists := columnsRaw[colName]; exists {
-				if ct, ok := colType.(string); ok && strings.EqualFold(ct, "TEXT") {
+			// Verify the column exists and is TEXT type (supports both string and object formats).
+			if colVal, exists := columnsRaw[colName]; exists {
+				isText := false
+				switch cv := colVal.(type) {
+				case string:
+					isText = strings.EqualFold(cv, "TEXT")
+				case map[string]interface{}:
+					if ct, ok := cv["type"].(string); ok {
+						isText = strings.EqualFold(ct, "TEXT")
+					}
+				}
+				if isText {
 					searchableCols = append(searchableCols, colName)
 				}
 			}
@@ -442,24 +541,29 @@ func (t *SchemaTool) alter(ctx *ToolContext, args map[string]interface{}) (*Resu
 			if !validColumnName.MatchString(colName) {
 				return &Result{Success: false, Error: fmt.Sprintf("invalid column name: %s", colName)}, nil
 			}
-			colType, ok := colTypeRaw.(string)
-			if !ok {
-				return &Result{Success: false, Error: fmt.Sprintf("column type must be a string for %s", colName)}, nil
-			}
-			colType = strings.ToUpper(colType)
-			sqlType, allowed := allowedColumnTypes[colType]
-			if !allowed {
-				return &Result{Success: false, Error: fmt.Sprintf("unsupported column type: %s", colType)}, nil
+
+			cd, err := parseColumnDef(colName, colTypeRaw)
+			if err != nil {
+				return &Result{Success: false, Error: err.Error()}, nil
 			}
 
-			alterSQL := fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", physicalName, colName, sqlType)
+			alterSQL := fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s", physicalName, cd.columnSQL())
 			if _, err := ctx.DB.Exec(alterSQL); err != nil {
 				return nil, fmt.Errorf("adding column %s: %w", colName, err)
 			}
 
 			// Track secure columns.
-			if kind, isSecure := secureColumnKinds[colType]; isSecure {
-				secureCols[colName] = kind
+			if cd.IsSecure {
+				secureCols[colName] = cd.Kind
+			}
+
+			// Create UNIQUE index if requested.
+			if cd.Unique {
+				idxName := fmt.Sprintf("idx_%s_%s_unique", physicalName, colName)
+				idxSQL := fmt.Sprintf("CREATE UNIQUE INDEX IF NOT EXISTS %s ON %s (%s)", idxName, physicalName, colName)
+				if _, err := ctx.DB.Exec(idxSQL); err != nil {
+					return nil, fmt.Errorf("creating unique index on %s: %w", colName, err)
+				}
 			}
 
 			addedCols = append(addedCols, colName)
@@ -578,6 +682,12 @@ func (t *SchemaTool) describe(ctx *ToolContext, args map[string]interface{}) (*R
 		}
 		if pk == 1 {
 			col["primary_key"] = true
+		}
+		if notNull == 1 {
+			col["not_null"] = true
+		}
+		if dfltValue != nil {
+			col["default"] = dfltValue
 		}
 		if secureCols != nil {
 			if kind, ok := secureCols[name]; ok {

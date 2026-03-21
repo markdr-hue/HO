@@ -6,6 +6,7 @@
 package brain
 
 import (
+	"errors"
 	"time"
 
 	"github.com/markdr-hue/HO/db"
@@ -14,6 +15,10 @@ import (
 	"github.com/markdr-hue/HO/security"
 	"github.com/markdr-hue/HO/tools"
 )
+
+// ErrPipelinePaused is returned by runToolLoop when a tool requests a pipeline pause
+// (e.g., manage_communication asking for a secret during BUILD).
+var ErrPipelinePaused = errors.New("pipeline paused: awaiting owner input")
 
 // BrainState represents the current state of a brain worker.
 type BrainState string

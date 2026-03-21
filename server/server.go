@@ -80,7 +80,7 @@ func New(deps *ServerDeps) *Server {
 	s.adminRouter.Use(middleware.SecurityHeaders)
 	s.adminRouter.Use(func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' https://fonts.googleapis.com; img-src 'self' data:; connect-src 'self'; font-src 'self' https://fonts.gstatic.com")
+			w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self' https://esm.sh; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' data:; connect-src 'self' https://esm.sh; font-src 'self' https://fonts.gstatic.com")
 			next.ServeHTTP(w, r)
 		})
 	})

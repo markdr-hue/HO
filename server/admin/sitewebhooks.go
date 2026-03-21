@@ -193,3 +193,53 @@ func (h *SiteWebhooksHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
+
+type createWebhookRequest struct {
+	Name      string   `json:"name"`
+	Direction string   `json:"direction"` // incoming or outgoing
+	URL       string   `json:"url"`       // for outgoing
+	Secret    string   `json:"secret"`    // HMAC signing secret
+	Events    []string `json:"events"`    // event subscriptions
+}
+
+// Create adds a new webhook for a site.
+func (h *SiteWebhooksHandler) Create(w http.ResponseWriter, r *http.Request) {
+	_, siteDB := requireSiteDB(w, r, h.deps.SiteDBManager)
+	if siteDB == nil {
+		return
+	}
+
+	var req createWebhookRequest
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	if req.Name == "" {
+		writeError(w, http.StatusBadRequest, "name is required")
+		return
+	}
+	if req.Direction == "" {
+		req.Direction = "incoming"
+	}
+	if req.Direction == "outgoing" && req.URL == "" {
+		writeError(w, http.StatusBadRequest, "url is required for outgoing webhooks")
+		return
+	}
+
+	db := siteDB.Writer()
+	result, err := db.Exec(
+		"INSERT INTO ho_webhooks (name, direction, url, secret) VALUES (?, ?, ?, ?)",
+		req.Name, req.Direction, req.URL, req.Secret,
+	)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to create webhook")
+		return
+	}
+	whID, _ := result.LastInsertId()
+
+	// Add event subscriptions.
+	for _, evt := range req.Events {
+		db.Exec("INSERT INTO ho_webhook_subscriptions (webhook_id, event_type) VALUES (?, ?)", whID, evt)
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{"id": whID, "name": req.Name})
+}

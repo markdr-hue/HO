@@ -41,6 +41,8 @@ var ChatToolSet = map[string]bool{
 	"manage_jobs":          true,
 	"manage_actions":       true,
 	"manage_memory":        true,
+	"manage_testing":       true,
+	"manage_plan":          true,
 }
 
 // Registry holds all registered tools keyed by name.
