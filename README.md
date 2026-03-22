@@ -2,11 +2,12 @@
 
 **One binary. Describe what you want. Done.**
 
-HO autonomously builds, deploys, and monitors web(sites/apps/games).
+---
+
+HO autonomously builds, deploys, and monitors advanced web(sites/apps/games).
 
 No Docker. No npm. No database server. No webserver. No build steps. Just run it.
 
-Also, your data stays on your server/computer. Nothing gets hosted in the cloud.
 
 ![HO Screenshot 1](readme_assets/screen_1.jpg)
 
