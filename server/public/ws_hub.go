@@ -40,11 +40,29 @@ func (h *wsHub) join(roomKey, clientID string) *wsClient {
 	}
 	room[clientID] = c
 
-	// Count clients for the join event.
+	// Collect client count and IDs for the join event.
 	clientCount := len(room)
+	clientIDs := make([]string, 0, clientCount)
+	for id := range room {
+		clientIDs = append(clientIDs, id)
+	}
 	h.mu.Unlock()
 
-	// Broadcast join event to all existing clients (including the joiner).
+	// Send a welcome message to the joiner with their assigned client ID
+	// and the list of all clients already in the room.
+	welcomeMsg, _ := json.Marshal(map[string]interface{}{
+		"_type":      "welcome",
+		"_clientId":  clientID,
+		"_room":      roomKey,
+		"_clients":   clientCount,
+		"_clientIds": clientIDs,
+	})
+	select {
+	case c.ch <- welcomeMsg:
+	default:
+	}
+
+	// Broadcast join event to all clients (including the joiner).
 	joinMsg, _ := json.Marshal(map[string]interface{}{
 		"_type":    "join",
 		"_sender":  clientID,

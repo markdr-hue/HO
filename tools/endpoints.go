@@ -37,11 +37,22 @@ func (t *EndpointsTool) Guide() string {
 - **create_api**: CRUD REST. GET /api/{path} (list: {data, count, limit, offset}), GET /{id}, POST, PUT, DELETE. Filtering: ?col=val, ?col__like=, ?col__gt=, ?q=. Column selection: ?fields=col1,col2 (returns only requested columns + id).
 - **create_auth**: JWT auth. POST /api/{path}/login, /register -> {token}. GET /api/{path}/me -> user. Bearer token required.
 - **create_llm**: AI endpoint with TWO routes. POST /api/{path}/chat streams SSE tokens (for chatbots/assistants). POST /api/{path}/complete returns full JSON {content, model, usage, stop_reason} (for content generators, code generators, classifiers). Choose the route based on the use case — use /chat when tokens should appear in real time, use /complete when you need the full response before rendering or processing it. Params: system_prompt (required), max_tokens (default 4096; use 8192+ for code generation), temperature (default 0.7), max_history (default 20), rate_limit (requests/min/IP, default 10), requires_auth, cors_origins.
-- **create_websocket**: Bidirectional relay. Connect: ws(s)://host/api/{path}/ws?room=X. The server sends TWO kinds of messages that your JS must handle separately:
-  1. **System messages** (from the server): have _type field. {_type:"join", _sender:"UUID", _clients:N} when someone joins, {_type:"leave", _sender:"UUID", _clients:N} when someone leaves. Use _clients to know how many are connected.
-  2. **User messages** (from other clients): have whatever fields the sender included, plus _sender:"UUID" injected by the server.
-  **Echo suppression**: your own messages are NOT sent back to you. Update UI optimistically after send. Only incoming messages are from OTHER clients.
-  **Multiplayer pattern**: on connect, send {type:"join", playerId:"...", name:"..."}. On receiving messages, check if msg._type exists (system) vs msg.type (user). For matchmaking, use _clients count from system join messages to know when enough players are connected.
+- **create_websocket**: Stateless message relay (NOT a game server). The server does NOT process or understand your messages. It only forwards them to other clients in the same room. There is NO server-side matchmaking, game logic, or state management. Your client JS must handle ALL game logic.
+  **Connection**: ws(s)://host/api/{path}/ws?room=ROOMNAME. The ?room= parameter is REQUIRED for multiplayer. All players must connect to the SAME room to see each other.
+  **System messages** (have _type field):
+  - {_type:"welcome", _clientId:"YOUR-UUID", _room:"...", _clients:N, _clientIds:["uuid1","uuid2",...]} sent ONLY to you on connect. Use _clientId as your unique ID and _clientIds to know who's already in the room.
+  - {_type:"join", _sender:"UUID", _clients:N} when someone joins.
+  - {_type:"leave", _sender:"UUID", _clients:N} when someone leaves.
+  **User messages** (from other clients): have whatever fields the sender included, plus _sender:"UUID". Your own messages are NOT echoed back (update UI optimistically).
+  **CRITICAL multiplayer pattern** (since this is a relay, not a game server):
+  1. Connect with a fixed room: new WebSocket(url + '?room=lobby'). All players MUST use the same room name.
+  2. On _type:"welcome": store _clientId as your unique ID. Use _clientIds to know who else is already in the room. Broadcast your player info: send({type:'player_join', id:myClientId, name:'...'}).
+  3. On _type:"join" system message: re-broadcast your player info so the newcomer sees you.
+  4. On user type:'player_join': add the sender to your local player list.
+  5. For matchmaking: use _clients count from system messages. When _clients >= 2, compare _clientIds; the alphabetically first ID becomes "host" and broadcasts {type:'game_start', seed:..., players:[...]}.
+  6. All game state (movement, scoring, win conditions) is managed client-side and synced via broadcast messages.
+  7. NEVER wait for server-side messages like "match_found" or "player_list". The server does not send those. Clients coordinate directly through the relay.
+  8. Use _clientId (from welcome) as your player ID, NOT a self-generated one. This ensures _sender fields match your ID for correlation.
 - **create_stream**: SSE. new EventSource('/api/{path}/stream').
 - **create_upload**: Multipart POST /api/{path}/upload -> {url, filename, size, type}. Optional table_name auto-persists uploads.
 - **create_llm does NOT provide CRUD**. If a page needs data listing AND AI features, create BOTH a create_api (for CRUD) and a create_llm (for AI chat/completion).
