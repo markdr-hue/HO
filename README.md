@@ -263,10 +263,10 @@ These projects embody the same spirit HO strives for: powerful things should be 
 
 ## About Me
 
-- Full-time single dad of 3 with a fullt-time job to match that
-- If you have mental problems try to seek help, most are fixable
+- Full-time single dad of 3 with a full-time job to match that
+- If you have mental problems try to seek help. Don't suffer in silence
 - Be yourself, don't let anyone decide what to do or think
-- Remember, most people are unaware of the system they live in and go to great lengths to defend it
+- No need to idolize people or companies, most of them are clueless
 
 ---
 
