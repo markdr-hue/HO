@@ -78,6 +78,7 @@ func writeContextSections(b *strings.Builder, siteDB *sql.DB, plan *Plan, sectio
 const platformRules = `### Platform Rules
 - Page content replaces {{content}} in the layout template (no DOCTYPE/html/head/body).
 - /assets/ file tags are auto-injected — never add them manually.
+- Reusable HTML: use {{include:component_name}} in page content to include a saved component. Create components with manage_components.
 - On tool failure: read current state before retrying.
 `
 
@@ -98,10 +99,10 @@ const planJSONSchema = `### JSON Shape
   },
   "layout": {"style": "topnav|sidebar|minimal|split|dashboard|full-bleed|any style that fits", "nav_items": ["/", "/about"], "header": "full|minimal|none", "footer": "full|minimal|none"},
   "tables": [
-    {"name": "table_name", "purpose": "what it stores", "columns": [{"name": "col", "type": "TEXT|INTEGER|REAL|BOOLEAN|PASSWORD|ENCRYPTED", "required": true}], "searchable_columns": ["col"], "seed_data": [{"col": "example1"}, {"col": "example2"}]}
+    {"name": "table_name", "purpose": "what it stores", "columns": [{"name": "col", "type": "TEXT|INTEGER|REAL|BOOLEAN|PASSWORD|ENCRYPTED", "required": true, "references": "other_table(id)"}], "searchable_columns": ["col"], "seed_data": [{"col": "example1"}, {"col": "example2"}]}
   ],
   "endpoints": [
-    {"action": "create_api|create_auth|create_websocket|create_stream|create_upload|create_llm", "path": "resource", "table_name": "table_name", "streaming": true, "owner_column": "user_id (optional: scopes data per user)", ...}
+    {"action": "create_api|create_auth|create_websocket|create_stream|create_upload|create_llm", "path": "resource", "table_name": "table_name", "streaming": true, "owner_column": "user_id (optional: scopes data per user)", "cache_ttl": 60, ...}
   ],
   "pages": [
     {"path": "/", "title": "Home", "purpose": "what this page does", "sections": [
@@ -114,7 +115,8 @@ const planJSONSchema = `### JSON Shape
   ],
   "exclusions": ["things NOT to build"],
   "webhooks": [{"name": "...", "direction": "incoming|outgoing", "event_types": [...]}],
-  "actions": [{"name": "...", "event_type": "auth.register|data.insert|...", "action_type": "send_email|http_request|insert_data|update_data", "action_config": {"to": "{{email}}", "..."}, "event_filter": {"table": "users"}}],
+  "components": [{"name": "component-name", "purpose": "Reusable HTML block included via {{include:component-name}} in pages"}],
+  "actions": [{"name": "...", "event_type": "auth.register|auth.login|data.insert|data.update|data.delete|payment.completed|payment.failed|webhook.received|file.uploaded|page.published|page.updated|schema.created|scheduled.completed|scheduled.failed|scheduled.*", "action_type": "send_email|http_request|insert_data|update_data|trigger_webhook|ws_broadcast|run_sql|enqueue_job", "action_config": {"to": "{{email}}", "..."}, "event_filter": {"table": "users"}}],
   "scheduled_tasks": [{"name": "...", "description": "...", "prompt": "...", "cron": "0 8 * * *"}],
   "questions": [
     {"question": "...", "type": "single_choice|multiple_choice|open", "options": ["..."]},
@@ -153,6 +155,12 @@ When the site requires an external service (Stripe, SendGrid, OpenAI, etc.), use
 - seed_data: a few example rows showing data shape only — keep minimal to save tokens. The BUILD stage decides whether to expand with realistic data or skip seeding (e.g. for user-generated tables like messages or orders).
 - actions: server-side hooks that fire on events without the LLM (e.g. send welcome email on registration, log to audit table on data changes). Only include if the user explicitly requests event-driven behavior or it's clearly implied (e.g. "email confirmation on signup"). Do NOT add actions by default.
   - update_data actions require: table (string), set (object), where (object). For counters use {"$increment":1} or {"$decrement":1} as the value. Event payload includes all request body fields — use {{field_name}} templates.
+  - ws_broadcast actions push real-time messages to WebSocket clients: {"endpoint_path":"/ws/chat", "room":"general", "message":{"type":"new_item","data":{"id":"{{id}}"}}}. Use for live dashboards, notifications, and real-time feeds.
+  - run_sql actions execute SQL on events (INSERT/UPDATE/SELECT allowed, DROP/ALTER/DELETE blocked): {"sql":"UPDATE stats SET count = (SELECT COUNT(*) FROM orders)"}. Use for computed aggregations.
+  - enqueue_job actions create background jobs: {"type":"send_email", "payload":{"to":"{{email}}"}, "max_attempts":3}. Use for deferred/retryable work.
+- components: reusable HTML snippets shared across pages. Include in page content with {{include:component_name}}. Use for repeated UI blocks (cards, forms, navigation sections). Only plan components when multiple pages share the same HTML structure.
+- columns.references: foreign key constraint linking to another table — format "other_table(id)". Enforced by SQLite. Use for relational data (orders→users, comments→posts).
+- cache_ttl on create_api endpoints: response cache in seconds for GET requests (e.g. 60 = cache for 1 minute). Cache auto-invalidates on POST/PUT/DELETE. Use for read-heavy endpoints like product listings or dashboards.
 
 ## Layout & Chrome
 - header and footer are REQUIRED fields — you must set them explicitly for every plan. Do not omit them.
@@ -280,6 +288,10 @@ func buildOrderChecklist(plan *Plan, progress *buildProgressTracker) string {
 	// Only include shared JS step if there are endpoints or auth (otherwise nothing to share).
 	if len(plan.Endpoints) > 0 || plan.AuthStrategy != "" {
 		b.WriteString(fmt.Sprintf("%d. Create shared JS utilities (auth, fetch helpers, etc.) with scope=\"global\"\n", step))
+		step++
+	}
+	for _, comp := range plan.Components {
+		b.WriteString(fmt.Sprintf("%d. Create component: %s (%s) — use manage_components, include in pages with {{include:%s}}\n", step, comp.Name, comp.Purpose, comp.Name))
 		step++
 	}
 	for _, pg := range plan.Pages {
@@ -595,7 +607,8 @@ For each page: (a) if needed, patch the global CSS file to add page-specific cla
 - Shared logic → global-scope .js (auto-injected). Page logic → page-scope .js (listed in assets).
 - Route params: window.__routeParams.id for dynamic pages.
 - Auth: store JWT in localStorage key 'auth_token'. Header: Authorization: 'Bearer ' + token.
-- Auth: set path="auth" in create_auth endpoint. This creates /api/auth/register, /api/auth/login, /api/auth/me.
+- Auth: set path="auth" in create_auth endpoint. This creates /api/auth/register, /api/auth/login, /api/auth/me, /api/auth/refresh.
+- Token refresh: POST /api/{auth_path}/refresh with Authorization header returns a new token. Use to extend sessions without re-login.
 - **Auth field names**: The register/login body must use the EXACT column names from the auth endpoint config. If username_column="email", send {"email": "...", "password": "..."} — NOT {"username": "..."}. The server matches field names to column names.
 - **API patterns**: See the manage_endpoints guide above for response shapes, auth headers, and frontend fetch patterns. Filtering: ?col=val, ?col__like=, ?col__gt=, ?q=term. Sorting: ?sort=col&order=asc|desc. Column selection: ?fields=col1,col2. The filters=[{...}] syntax is for tools only, never for frontend. Only sort by columns that exist — tables auto-add "id" and "created_at" (NOT "updated_at"). Do NOT use "order_direction" — the correct param names are "order" or "direction".
 - **LLM endpoints**: POST /api/{path}/chat for SSE streaming (parse event "token" → data.text, NOT data.content), POST /api/{path}/complete for full JSON response (use response.content, NOT .text). Check stop_reason — "max_tokens" means truncated. For generated HTML: use innerHTML. For generated data: JSON.parse(response.content).

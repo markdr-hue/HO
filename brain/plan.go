@@ -32,9 +32,10 @@ type Plan struct {
 	ExternalLibraries []LibrarySpec  `json:"external_libraries,omitempty"`
 	Exclusions        []string       `json:"exclusions,omitempty"`
 	Webhooks          []WebhookSpec  `json:"webhooks,omitempty"`
-	Actions           []ActionSpec   `json:"actions,omitempty"`
-	ScheduledTasks    []TaskSpec     `json:"scheduled_tasks,omitempty"`
-	Questions         []PlanQuestion `json:"questions,omitempty"`
+	Actions           []ActionSpec    `json:"actions,omitempty"`
+	Components        []ComponentSpec `json:"components,omitempty"`
+	ScheduledTasks    []TaskSpec      `json:"scheduled_tasks,omitempty"`
+	Questions         []PlanQuestion  `json:"questions,omitempty"`
 }
 
 // LibrarySpec declares an external CDN library the site needs.
@@ -127,6 +128,11 @@ type ActionSpec struct {
 	EventFilter  map[string]interface{} `json:"event_filter,omitempty"` // match against event payload
 }
 
+type ComponentSpec struct {
+	Name    string `json:"name"`              // component name (alphanumeric, hyphens, underscores)
+	Purpose string `json:"purpose,omitempty"` // what this component renders
+}
+
 type TaskSpec struct {
 	Name        string `json:"name"`
 	Description string `json:"description"`
@@ -179,9 +185,10 @@ type PlanPatch struct {
 	ModifyEndpoints    []EndpointSpec `json:"modify_endpoints,omitempty"`
 	AddTables          []TableSpec    `json:"add_tables,omitempty"`
 	ModifyTables       []TableSpec    `json:"modify_tables,omitempty"`
-	AddWebhooks        []WebhookSpec  `json:"add_webhooks,omitempty"`
-	AddTasks           []TaskSpec     `json:"add_scheduled_tasks,omitempty"`
-	UpdateCSS          bool           `json:"update_css"`
+	AddWebhooks        []WebhookSpec   `json:"add_webhooks,omitempty"`
+	AddComponents      []ComponentSpec `json:"add_components,omitempty"`
+	AddTasks           []TaskSpec      `json:"add_scheduled_tasks,omitempty"`
+	UpdateCSS          bool            `json:"update_css"`
 	UpdateNav          bool           `json:"update_nav"`
 	UpdateAuthStrategy string         `json:"update_auth_strategy,omitempty"`
 	UpdateDesignSystem *DesignSystem  `json:"update_design_system,omitempty"`
@@ -263,6 +270,7 @@ func (p *Plan) ApplyPatch(patch *PlanPatch) {
 	p.Endpoints = append(p.Endpoints, patch.AddEndpoints...)
 	p.Tables = append(p.Tables, patch.AddTables...)
 	p.Webhooks = append(p.Webhooks, patch.AddWebhooks...)
+	p.Components = append(p.Components, patch.AddComponents...)
 	p.ScheduledTasks = append(p.ScheduledTasks, patch.AddTasks...)
 
 	if patch.UpdateAuthStrategy != "" {

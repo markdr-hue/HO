@@ -183,6 +183,12 @@ func (h *wsHub) roomClients(roomKey string) []string {
 	return ids
 }
 
+// BroadcastToRoom implements events.WSBroadcaster, allowing server-side
+// components (Actions Runner) to push messages to connected WebSocket clients.
+func (h *wsHub) BroadcastToRoom(roomKey string, msg json.RawMessage) {
+	h.broadcastAll(roomKey, []byte(msg))
+}
+
 // activeRooms returns all active room keys matching a prefix (e.g. "1:chat:").
 func (h *wsHub) activeRooms(prefix string) map[string]int {
 	h.mu.RLock()

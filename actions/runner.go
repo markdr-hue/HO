@@ -28,11 +28,12 @@ import (
 // Similar to the webhook Dispatcher but runs actions locally (send email,
 // HTTP request, insert/update data) instead of calling external URLs.
 type Runner struct {
-	siteDBMgr *db.SiteDBManager
-	bus       *events.Bus
-	encryptor *security.Encryptor
-	logger    *slog.Logger
-	client    *http.Client
+	siteDBMgr   *db.SiteDBManager
+	bus         *events.Bus
+	encryptor   *security.Encryptor
+	broadcaster events.WSBroadcaster // optional — nil if WS hub not available yet
+	logger      *slog.Logger
+	client      *http.Client
 }
 
 // NewRunner creates an action runner and subscribes to all events.
@@ -48,6 +49,12 @@ func NewRunner(siteDBMgr *db.SiteDBManager, bus *events.Bus, encryptor *security
 	bus.SubscribeAll(r.handleEvent)
 
 	return r
+}
+
+// SetBroadcaster sets the WebSocket broadcaster for ws_broadcast actions.
+// Called after the public server creates the WS hub.
+func (r *Runner) SetBroadcaster(b events.WSBroadcaster) {
+	r.broadcaster = b
 }
 
 // handleEvent checks if any actions are subscribed to this event type.
@@ -170,6 +177,12 @@ func (r *Runner) execute(siteDB *sql.DB, event events.Event, actionID int, name,
 		err = r.executeUpdateData(siteDB, config)
 	case "trigger_webhook":
 		err = r.executeTriggerWebhook(siteDB, event, config)
+	case "ws_broadcast":
+		err = r.executeWSBroadcast(event, config)
+	case "run_sql":
+		err = r.executeRunSQL(siteDB, config)
+	case "enqueue_job":
+		err = r.executeEnqueueJob(siteDB, config)
 	default:
 		r.logger.Warn("action: unknown action_type", "action", name, "type", actionType)
 		return
@@ -555,6 +568,99 @@ func (r *Runner) executeTriggerWebhook(siteDB *sql.DB, event events.Event, confi
 
 	if resp.StatusCode >= 400 {
 		return fmt.Errorf("trigger_webhook: webhook returned %d", resp.StatusCode)
+	}
+	return nil
+}
+
+// executeWSBroadcast sends a JSON message to a WebSocket room.
+// Config: {"endpoint_path":"/ws/chat", "room":"general", "message":{"type":"new_order","data":{...}}}
+func (r *Runner) executeWSBroadcast(event events.Event, config map[string]interface{}) error {
+	if r.broadcaster == nil {
+		return fmt.Errorf("ws_broadcast: WebSocket broadcaster not available")
+	}
+
+	endpointPath, _ := config["endpoint_path"].(string)
+	room, _ := config["room"].(string)
+	if endpointPath == "" {
+		return fmt.Errorf("ws_broadcast: 'endpoint_path' is required")
+	}
+	if room == "" {
+		room = "default"
+	}
+
+	// Build the message — use config["message"] if provided, otherwise the event payload.
+	msg := config["message"]
+	if msg == nil {
+		msg = event.Payload
+	}
+
+	msgBytes, err := json.Marshal(msg)
+	if err != nil {
+		return fmt.Errorf("ws_broadcast: marshaling message: %w", err)
+	}
+
+	// Room key format: "siteID:endpointPath:room"
+	roomKey := fmt.Sprintf("%d:%s:%s", event.SiteID, endpointPath, room)
+	r.broadcaster.BroadcastToRoom(roomKey, msgBytes)
+
+	return nil
+}
+
+// executeRunSQL runs a read-only SELECT query and discards the result.
+// Useful for computed aggregations triggered by events (e.g. UPDATE stats SET count = (SELECT ...)).
+// Config: {"sql":"UPDATE stats SET order_count = (SELECT COUNT(*) FROM orders) WHERE id = 1"}
+// Despite the name, allows INSERT/UPDATE for aggregation writes — but rejects DROP/DELETE/ALTER.
+func (r *Runner) executeRunSQL(siteDB *sql.DB, config map[string]interface{}) error {
+	query, _ := config["sql"].(string)
+	if query == "" {
+		return fmt.Errorf("run_sql: 'sql' is required")
+	}
+
+	// Block destructive DDL — allow DML (INSERT, UPDATE, SELECT).
+	upper := strings.ToUpper(strings.TrimSpace(query))
+	for _, blocked := range []string{"DROP ", "ALTER ", "DELETE ", "TRUNCATE ", "CREATE ", "ATTACH ", "DETACH "} {
+		if strings.HasPrefix(upper, blocked) {
+			return fmt.Errorf("run_sql: '%s' statements are not allowed", strings.TrimSpace(blocked))
+		}
+	}
+
+	_, err := siteDB.Exec(query)
+	if err != nil {
+		return fmt.Errorf("run_sql: %w", err)
+	}
+	return nil
+}
+
+// executeEnqueueJob creates a background job in the ho_jobs queue.
+// Config: {"type":"send_email", "payload":{"to":"user@example.com"}, "scheduled_at":"2024-01-01T00:00:00Z"}
+func (r *Runner) executeEnqueueJob(siteDB *sql.DB, config map[string]interface{}) error {
+	jobType, _ := config["type"].(string)
+	if jobType == "" {
+		return fmt.Errorf("enqueue_job: 'type' is required")
+	}
+
+	payload := config["payload"]
+	if payload == nil {
+		payload = map[string]interface{}{}
+	}
+	payloadJSON, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("enqueue_job: marshaling payload: %w", err)
+	}
+
+	scheduledAt := config["scheduled_at"]
+	maxAttempts := 3
+	if ma, ok := config["max_attempts"].(float64); ok && ma > 0 {
+		maxAttempts = int(ma)
+	}
+
+	_, err = siteDB.Exec(
+		`INSERT INTO ho_jobs (type, payload, status, max_attempts, scheduled_at)
+		 VALUES (?, ?, 'pending', ?, COALESCE(?, CURRENT_TIMESTAMP))`,
+		jobType, string(payloadJSON), maxAttempts, scheduledAt,
+	)
+	if err != nil {
+		return fmt.Errorf("enqueue_job: %w", err)
 	}
 	return nil
 }

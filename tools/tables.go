@@ -14,6 +14,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/markdr-hue/HO/events"
 	"github.com/markdr-hue/HO/internal/sqliteretry"
 	"github.com/markdr-hue/HO/security"
 )
@@ -44,16 +45,20 @@ var secureColumnKinds = map[string]string{
 
 // schemaColumnDef holds a parsed column definition with optional constraints.
 type schemaColumnDef struct {
-	Name     string
-	Type     string // logical type (TEXT, INTEGER, REAL, BOOLEAN, PASSWORD, ENCRYPTED)
-	SQLType  string // mapped SQLite type
-	NotNull  bool
-	Unique   bool
-	Default  string // raw SQL default expression (e.g. "'draft'" or "0")
-	Check    string // raw SQL check expression (e.g. "> 0")
-	IsSecure bool
-	Kind     string // "hash" or "encrypt" for secure columns
+	Name       string
+	Type       string // logical type (TEXT, INTEGER, REAL, BOOLEAN, PASSWORD, ENCRYPTED)
+	SQLType    string // mapped SQLite type
+	NotNull    bool
+	Unique     bool
+	Default    string // raw SQL default expression (e.g. "'draft'" or "0")
+	Check      string // raw SQL check expression (e.g. "> 0")
+	References string // foreign key reference (e.g. "users(id)") — generates REFERENCES clause
+	IsSecure   bool
+	Kind       string // "hash" or "encrypt" for secure columns
 }
+
+// validFKReference matches "table(column)" format for foreign key references.
+var validFKReference = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9_]*\([a-zA-Z][a-zA-Z0-9_]*\)$`)
 
 // parseColumnDef parses a column value that is either a simple string type
 // ("TEXT") or an object with constraints ({"type":"TEXT","not_null":true,...}).
@@ -82,6 +87,12 @@ func parseColumnDef(name string, raw interface{}) (*schemaColumnDef, error) {
 		}
 		if chk, ok := v["check"].(string); ok && chk != "" {
 			cd.Check = chk
+		}
+		if ref, ok := v["references"].(string); ok && ref != "" {
+			if !validFKReference.MatchString(ref) {
+				return nil, fmt.Errorf("column %s: invalid references format '%s' — use 'table(column)' (e.g. 'users(id)')", name, ref)
+			}
+			cd.References = ref
 		}
 	default:
 		return nil, fmt.Errorf("column %s: type must be a string or object", name)
@@ -113,6 +124,9 @@ func (cd *schemaColumnDef) columnSQL() string {
 	}
 	if cd.Check != "" {
 		parts = append(parts, fmt.Sprintf("CHECK (%s %s)", cd.Name, cd.Check))
+	}
+	if cd.References != "" {
+		parts = append(parts, "REFERENCES "+cd.References)
 	}
 	return strings.Join(parts, " ")
 }
@@ -243,11 +257,12 @@ func (t *SchemaTool) Guide() string {
 - Column types: TEXT, INTEGER, REAL, BOOLEAN, PASSWORD (bcrypt), ENCRYPTED (AES).
 - id and created_at columns are auto-added — do NOT include them.
 - Columns accept a simple string ("TEXT") or an object for constraints:
-  {"type":"TEXT", "not_null":true, "unique":true, "default":"'draft'", "check":"> 0"}
+  {"type":"INTEGER", "not_null":true, "unique":true, "default":"0", "check":"> 0", "references":"users(id)"}
   - not_null: adds NOT NULL constraint
   - unique: creates a UNIQUE index on the column
   - default: SQL default value (wrap strings in single quotes: "'draft'")
   - check: SQL CHECK expression applied to the column (e.g. "> 0", "IN ('a','b','c')")
+  - references: foreign key to another table — format "table(column)" (e.g. "users(id)"). Enforced by SQLite.
 - searchable_columns enables FTS5 full-text search (used with manage_data search action).
 - PASSWORD columns auto-hash with bcrypt. ENCRYPTED columns auto-encrypt with AES.
 - Reserved names (cannot be used): ho_pages, ho_assets, ho_questions, ho_answers, ho_memory, ho_secrets, ho_analytics, ho_layouts, ho_files, ho_chat_messages, ho_brain_log, ho_dynamic_tables, ho_api_endpoints, ho_auth_endpoints, ho_webhooks, ho_scheduled_tasks. Use descriptive prefixes (e.g. survey_questions, quiz_answers).
@@ -269,7 +284,7 @@ func (t *SchemaTool) Parameters() map[string]interface{} {
 			},
 			"columns": map[string]interface{}{
 				"type":        "object",
-				"description": `Column definitions as {name: type_or_object}. Simple: {"email":"TEXT"}. With constraints: {"email":{"type":"TEXT","not_null":true,"unique":true,"default":"'value'","check":"> 0"}}. Types: TEXT, INTEGER, REAL, BOOLEAN, PASSWORD (auto-hashed), ENCRYPTED (auto-encrypted)`,
+				"description": `Column definitions as {name: type_or_object}. Simple: {"email":"TEXT"}. With constraints: {"email":{"type":"TEXT","not_null":true,"unique":true,"default":"'value'","check":"> 0","references":"users(id)"}}. Types: TEXT, INTEGER, REAL, BOOLEAN, PASSWORD (auto-hashed), ENCRYPTED (auto-encrypted). references: foreign key to another table.`,
 			},
 			"add_columns": map[string]interface{}{
 				"type":        "object",
@@ -450,6 +465,14 @@ func (t *SchemaTool) create(ctx *ToolContext, args map[string]interface{}) (*Res
 	if len(searchableCols) > 0 {
 		resultData["fts_columns"] = searchableCols
 	}
+
+	// Publish schema.created event.
+	if ctx.Bus != nil {
+		ctx.Bus.Publish(events.NewEvent(events.EventSchemaCreated, ctx.SiteID, map[string]interface{}{
+			"table": tableName,
+		}))
+	}
+
 	return &Result{Success: true, Data: resultData}, nil
 }
 
@@ -633,6 +656,15 @@ func (t *SchemaTool) alter(ctx *ToolContext, args map[string]interface{}) (*Resu
 		string(secureColsJSON), tableName,
 	); err != nil {
 		return &Result{Success: false, Error: fmt.Sprintf("failed to update secure columns registry: %v", err)}, nil
+	}
+
+	// Publish schema.altered event.
+	if ctx.Bus != nil {
+		ctx.Bus.Publish(events.NewEvent(events.EventSchemaAltered, ctx.SiteID, map[string]interface{}{
+			"table":   tableName,
+			"added":   addedCols,
+			"dropped": droppedCols,
+		}))
 	}
 
 	return &Result{Success: true, Data: map[string]interface{}{

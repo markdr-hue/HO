@@ -117,6 +117,13 @@ func (h *Handler) handleAuthRequest(w http.ResponseWriter, r *http.Request, site
 		}
 		h.authMe(w, r, siteID, readDB, physTable, ae)
 		return true
+	case "refresh":
+		if r.Method != http.MethodPost {
+			writePublicError(w, http.StatusMethodNotAllowed, "POST required")
+			return true
+		}
+		h.authRefresh(w, r, siteID, readDB, physTable, ae)
+		return true
 	}
 
 	// OAuth routes: oauth/{provider} or oauth/{provider}/callback
@@ -389,6 +396,51 @@ func (h *Handler) authMe(w http.ResponseWriter, r *http.Request, siteID int, rea
 	}
 
 	writePublicJSON(w, http.StatusOK, results[0])
+}
+
+// authRefresh handles POST /api/{path}/refresh.
+// Accepts a valid JWT and returns a new token with a fresh expiry.
+// The user must still exist in the database; the token must be scoped to this site.
+func (h *Handler) authRefresh(w http.ResponseWriter, r *http.Request, siteID int, readDB *sql.DB, physTable string, ae *authEndpointConfig) {
+	claims, err := h.extractUserClaims(r)
+	if err != nil || claims.SiteID != siteID {
+		writePublicError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+
+	// Verify the user still exists in the database.
+	var exists int
+	err = readDB.QueryRow(
+		fmt.Sprintf("SELECT 1 FROM %s WHERE id = ?", physTable),
+		claims.UserID,
+	).Scan(&exists)
+	if err != nil {
+		writePublicError(w, http.StatusUnauthorized, "user no longer exists")
+		return
+	}
+
+	// Fetch current role in case it changed since the token was issued.
+	var role sql.NullString
+	_ = readDB.QueryRow(
+		fmt.Sprintf("SELECT %s FROM %s WHERE id = ?", ae.RoleColumn, physTable),
+		claims.UserID,
+	).Scan(&role)
+	userRole := role.String
+	if userRole == "" {
+		userRole = ae.DefaultRole
+	}
+
+	token, err := h.generateUserToken(claims.UserID, claims.Username, userRole, siteID, ae)
+	if err != nil {
+		writePublicError(w, http.StatusInternalServerError, "failed to generate token")
+		return
+	}
+
+	writePublicJSON(w, http.StatusOK, map[string]interface{}{
+		"success": true,
+		"user_id": claims.UserID,
+		"token":   token,
+	})
 }
 
 // generateUserToken creates a JWT token for a site user, scoped to the site.

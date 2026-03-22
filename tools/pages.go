@@ -14,6 +14,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/markdr-hue/HO/events"
 )
 
 // ---------------------------------------------------------------------------
@@ -218,6 +220,21 @@ func (t *PagesTool) save(ctx *ToolContext, args map[string]interface{}) (*Result
 			Data:    resultData,
 		}, nil
 	}
+
+	// Publish page lifecycle event.
+	if ctx.Bus != nil {
+		eventPayload := map[string]interface{}{
+			"path":   path,
+			"title":  title,
+			"status": status,
+		}
+		if existingID > 0 {
+			ctx.Bus.Publish(events.NewEvent(events.EventPageUpdated, ctx.SiteID, eventPayload))
+		} else if status == "published" {
+			ctx.Bus.Publish(events.NewEvent(events.EventPagePublished, ctx.SiteID, eventPayload))
+		}
+	}
+
 	return &Result{Success: true, Data: resultData}, nil
 }
 

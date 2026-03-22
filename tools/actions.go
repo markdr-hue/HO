@@ -32,7 +32,7 @@ Actions are event-driven hooks that run automatically at runtime without the LLM
 Use them for things like sending a welcome email on user registration, logging to an audit table on data changes, or calling an external webhook on payment completion.
 
 - **create**: Set name, event_type, action_type, and action_config. Optional event_filter to narrow matches.
-  - action_type: send_email, http_request, insert_data, update_data, trigger_webhook.
+  - action_type: send_email, http_request, insert_data, update_data, trigger_webhook, ws_broadcast, run_sql, enqueue_job.
   - action_config: JSON with {{template}} variables resolved from the event payload at runtime.
   - event_filter: JSON object — all keys must match the event payload (e.g. {"table":"users"}).
 - **list**: List all actions.
@@ -40,7 +40,7 @@ Use them for things like sending a welcome email on user registration, logging t
 - **delete**: Remove an action by name.
 - **test**: Dry-run — shows the resolved config for a given event payload without executing.
 
-Event types: auth.register, auth.login, data.insert, data.update, data.delete, payment.completed, webhook.received, scheduled.* (from scheduler trigger_event).
+Event types: auth.register, auth.login, data.insert, data.update, data.delete, payment.completed, payment.failed, webhook.received, scheduled.*, file.uploaded, page.published, page.updated, schema.created, schema.altered, scheduled.completed, scheduled.failed.
 
 trigger_webhook example — notify Slack on new order:
   manage_actions(action="create", name="notify-slack-order", event_type="data.insert",
@@ -64,6 +64,15 @@ Example — increment likes on insert:
 update_data config requires: table (string), set (object of column→value), where (object of column→value).
 For increments use {"$increment":N}, for decrements use {"$decrement":N}.
 Event payload includes all fields from the request body — use {{field_name}} to reference them.
+
+ws_broadcast config: {"endpoint_path":"/ws/chat", "room":"general", "message":{"type":"new_item","data":{"id":"{{id}}"}}}
+  Broadcasts a JSON message to all WebSocket clients in the specified room. Great for real-time dashboards, live feeds, and notifications.
+
+run_sql config: {"sql":"UPDATE stats SET order_count = (SELECT COUNT(*) FROM orders) WHERE id = 1"}
+  Executes a SQL statement (SELECT, INSERT, UPDATE allowed; DROP/ALTER/DELETE blocked). Use for computed aggregations triggered by events.
+
+enqueue_job config: {"type":"send_email", "payload":{"to":"{{email}}"}, "max_attempts":3}
+  Creates a background job in the job queue. Use for deferred or retryable work triggered by events.
 
 Prerequisite for send_email: email must be configured via manage_email(action="configure") with a provider and API key.`
 }
@@ -91,7 +100,7 @@ func (t *ActionsTool) Parameters() map[string]interface{} {
 			},
 			"action_type": map[string]interface{}{
 				"type":        "string",
-				"enum":        []string{"send_email", "http_request", "insert_data", "update_data"},
+				"enum":        []string{"send_email", "http_request", "insert_data", "update_data", "trigger_webhook", "ws_broadcast", "run_sql", "enqueue_job"},
 				"description": "Type of action to execute",
 			},
 			"action_config": map[string]interface{}{
@@ -132,9 +141,12 @@ func (t *ActionsTool) create(ctx *ToolContext, args map[string]interface{}) (*Re
 	}
 
 	// Validate action_type.
-	validTypes := map[string]bool{"send_email": true, "http_request": true, "insert_data": true, "update_data": true}
+	validTypes := map[string]bool{
+		"send_email": true, "http_request": true, "insert_data": true, "update_data": true,
+		"trigger_webhook": true, "ws_broadcast": true, "run_sql": true, "enqueue_job": true,
+	}
 	if !validTypes[actionType] {
-		return &Result{Success: false, Error: fmt.Sprintf("invalid action_type '%s' — must be send_email, http_request, insert_data, or update_data", actionType)}, nil
+		return &Result{Success: false, Error: fmt.Sprintf("invalid action_type '%s' — must be one of: send_email, http_request, insert_data, update_data, trigger_webhook, ws_broadcast, run_sql, enqueue_job", actionType)}, nil
 	}
 
 	configJSON, err := json.Marshal(actionConfig)

@@ -106,6 +106,10 @@ func (t *EndpointsTool) Parameters() map[string]interface{} {
 				"type":        "number",
 				"description": "Max requests per minute per IP. Default: 60 for API, 10 for LLM. For create_api and create_llm.",
 			},
+			"cache_ttl": map[string]interface{}{
+				"type":        "number",
+				"description": "Response cache TTL in seconds for GET requests (0 = no caching, default). Cache auto-invalidates on POST/PUT/DELETE. For create_api.",
+			},
 			"username_column": map[string]interface{}{
 				"type":        "string",
 				"description": "Column used as the unique username/email for login (e.g. 'email'). Required for create_auth.",
@@ -357,9 +361,15 @@ func (t *EndpointsTool) createAPI(ctx *ToolContext, args map[string]interface{})
 		requiresAuth = true // owner scoping implies auth required
 	}
 
+	// Response caching: cache_ttl in seconds (0 = no caching).
+	cacheTTL := 0
+	if ct, ok := args["cache_ttl"].(float64); ok && ct > 0 {
+		cacheTTL = int(ct)
+	}
+
 	_, err = ctx.DB.Exec(
-		`INSERT INTO ho_api_endpoints (path, table_name, methods, public_columns, requires_auth, public_read, required_role, rate_limit, cors_origins, cors_methods, cors_headers, owner_column)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`INSERT INTO ho_api_endpoints (path, table_name, methods, public_columns, requires_auth, public_read, required_role, rate_limit, cors_origins, cors_methods, cors_headers, owner_column, cache_ttl)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(path) DO UPDATE SET
 		   table_name = excluded.table_name,
 		   methods = excluded.methods,
@@ -371,8 +381,9 @@ func (t *EndpointsTool) createAPI(ctx *ToolContext, args map[string]interface{})
 		   cors_origins = excluded.cors_origins,
 		   cors_methods = excluded.cors_methods,
 		   cors_headers = excluded.cors_headers,
-		   owner_column = excluded.owner_column`,
-		path, tableName, string(methodsJSON), publicColsJSON, requiresAuth, publicRead, requiredRole, rateLimit, corsOrigins, corsMethods, corsHeaders, ownerColumn,
+		   owner_column = excluded.owner_column,
+		   cache_ttl = excluded.cache_ttl`,
+		path, tableName, string(methodsJSON), publicColsJSON, requiresAuth, publicRead, requiredRole, rateLimit, corsOrigins, corsMethods, corsHeaders, ownerColumn, cacheTTL,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("creating API endpoint: %w", err)

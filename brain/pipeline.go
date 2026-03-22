@@ -2299,10 +2299,23 @@ func (w *PipelineWorker) finalizeTaskRun(runID int64, taskID int, success bool, 
 		if taskID > 0 {
 			w.siteDB.ExecWrite("UPDATE ho_scheduled_tasks SET run_count = run_count + 1 WHERE id = ?", taskID)
 		}
+		if w.deps.Bus != nil {
+			w.deps.Bus.Publish(events.NewEvent(events.EventScheduledCompleted, w.siteID, map[string]interface{}{
+				"task_id": taskID,
+				"run_id":  runID,
+			}))
+		}
 	} else {
 		w.siteDB.ExecWrite("UPDATE ho_task_runs SET status = 'failed', error_message = ?, completed_at = CURRENT_TIMESTAMP WHERE id = ?", errMsg, runID)
 		if taskID > 0 {
 			w.siteDB.ExecWrite("UPDATE ho_scheduled_tasks SET error_count = error_count + 1 WHERE id = ?", taskID)
+		}
+		if w.deps.Bus != nil {
+			w.deps.Bus.Publish(events.NewEvent(events.EventScheduledFailed, w.siteID, map[string]interface{}{
+				"task_id": taskID,
+				"run_id":  runID,
+				"error":   errMsg,
+			}))
 		}
 	}
 }

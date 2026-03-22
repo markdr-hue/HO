@@ -68,13 +68,13 @@ func printBanner(cfg *config.Config) {
    %sAdmin:%s     %s
    %sProjects:%s  %s
    ───────────────────────────────── 
-   %sSource via https://github.com/markdr-hue/HO
-
-   Special thanks to:
+   %sSpecial thanks to:
    https://caddyserver.com
    https://letsencrypt.org
 
-   Created by Mark Durlinger%s
+   Created by Mark Durlinger
+   https://github.com/markdr-hue/HO  (MIT License)
+   %s
 
 `, cyan, reset, reset, reset, dim, Version, reset,
 		green, reset, adminURL,
@@ -113,8 +113,9 @@ func main() {
 	defer siteDBMgr.CloseAll()
 
 	bus := events.NewBus()
-	webhooks.NewDispatcher(siteDBMgr, bus)       // Self-registers on the event bus via side effects.
-	actions.NewRunner(siteDBMgr, bus, encryptor) // Server-side actions (email, HTTP, data) on events.
+	webhooks.NewDispatcher(siteDBMgr, bus)                       // Self-registers on the event bus via side effects.
+	actionRunner := actions.NewRunner(siteDBMgr, bus, encryptor) // Server-side actions (email, HTTP, data) on events.
+	actions.NewAuditLogger(siteDBMgr, bus)                       // Audit logging for security/data events.
 
 	llmRegistry := llm.NewRegistry()
 	toolRegistry := tools.NewRegistry()
@@ -288,6 +289,9 @@ func main() {
 		AdminFS:         adminSubFS,
 		Version:         Version,
 	})
+
+	// Wire the WebSocket broadcaster into the Actions Runner so ws_broadcast actions work.
+	actionRunner.SetBroadcaster(srv.WSBroadcaster())
 
 	slog.Debug("HO ready",
 		"admin", cfg.AdminPort,

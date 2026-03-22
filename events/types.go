@@ -5,7 +5,18 @@
 
 package events
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
+
+// WSBroadcaster is implemented by the WebSocket hub to allow server-side
+// components (e.g. the Actions Runner) to push messages to connected clients.
+type WSBroadcaster interface {
+	// BroadcastToRoom sends a JSON message to all clients in the specified room.
+	// roomKey format: "siteID:endpointPath:roomName"
+	BroadcastToRoom(roomKey string, msg json.RawMessage)
+}
 
 type EventType string
 
@@ -42,6 +53,17 @@ const (
 	EventPaymentFailed    EventType = "payment.failed"
 	EventWSMessage        EventType = "ws.message"
 	EventSettingsChanged  EventType = "settings.changed"
+
+	// Content lifecycle events.
+	EventFileUploaded      EventType = "file.uploaded"
+	EventPagePublished     EventType = "page.published"
+	EventPageUpdated       EventType = "page.updated"
+	EventSchemaCreated     EventType = "schema.created"
+	EventSchemaAltered     EventType = "schema.altered"
+
+	// Scheduled task lifecycle events.
+	EventScheduledCompleted EventType = "scheduled.completed"
+	EventScheduledFailed    EventType = "scheduled.failed"
 )
 
 type Event struct {

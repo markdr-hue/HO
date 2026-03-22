@@ -80,6 +80,9 @@ func RegisterAll(r *Registry) {
 	// Testing (test_endpoint, test_auth_flow, test_page)
 	r.Register(&TestingTool{})
 
+	// Reusable HTML Components (save, get, list, delete)
+	r.Register(&ComponentsTool{})
+
 	// Plan Amendments (add_table, add_endpoint, get_plan)
 	r.Register(&PlanAmendTool{})
 }

@@ -44,7 +44,8 @@ const siteContextKey contextKey = "resolved_site"
 
 // Handler provides the main public request handlers.
 type Handler struct {
-	deps *Deps
+	deps     *Deps
+	apiCache *apiCache
 }
 
 // SiteResolver is middleware that resolves the site from the Host header
@@ -151,10 +152,13 @@ func (h *Handler) Page(w http.ResponseWriter, r *http.Request) {
 		routeParams = params
 	}
 
+	// Resolve {{include:component_name}} for SPA content too.
+	resolvedContent := resolveComponents(siteDB.Reader(), content.String)
+
 	// Strip shared asset refs the brain may have embedded, then strip external
 	// scripts and CSS links for SPA — extracting their URLs so the router
 	// can load them dynamically.
-	cleaned := stripSharedAssetRefs(content.String, siteDB.Reader())
+	cleaned := stripSharedAssetRefs(resolvedContent, siteDB.Reader())
 	cleanContent, contentCSS, contentJS := stripForSPA(cleaned)
 
 	// Normalize layout name for the SPA router (NULL/empty → "default").
@@ -511,6 +515,9 @@ func (h *Handler) renderDocument(site *models.Site, siteDB *sql.DB, pagePath, ti
 	// This prevents duplicate CSS/JS since assets are auto-injected above.
 	content = stripSharedAssetRefs(content, siteDB)
 
+	// Resolve {{include:component_name}} placeholders with reusable components.
+	content = resolveComponents(siteDB, content)
+
 	// Extract page-specific CSS and JS tags from page content:
 	// page <style> blocks → <head>, inline <script> blocks → end of <body>.
 	headTags, bodyEndTags, cleanContent := extractAssetTags(content)
@@ -700,6 +707,45 @@ func dedupStrings(in []string) []string {
 		}
 	}
 	return out
+}
+
+// componentIncludeRe matches {{include:component_name}} placeholders.
+var componentIncludeRe = regexp.MustCompile(`\{\{include:([a-zA-Z0-9_-]+)\}\}`)
+
+// resolveComponents replaces {{include:name}} placeholders in page content
+// with the corresponding component HTML from ho_components.
+// Limits to 20 replacements per page to prevent infinite recursion.
+func resolveComponents(siteDB *sql.DB, content string) string {
+	if !strings.Contains(content, "{{include:") {
+		return content
+	}
+
+	matches := componentIncludeRe.FindAllStringSubmatch(content, 20)
+	if len(matches) == 0 {
+		return content
+	}
+
+	// Deduplicate component names and batch-load.
+	nameSet := make(map[string]bool, len(matches))
+	for _, m := range matches {
+		nameSet[m[1]] = true
+	}
+
+	cache := make(map[string]string, len(nameSet))
+	for name := range nameSet {
+		var componentContent string
+		if err := siteDB.QueryRow("SELECT content FROM ho_components WHERE name = ?", name).Scan(&componentContent); err == nil {
+			cache[name] = componentContent
+		}
+	}
+
+	return componentIncludeRe.ReplaceAllStringFunc(content, func(match string) string {
+		name := match[10 : len(match)-2] // strip "{{include:" and "}}"
+		if html, ok := cache[name]; ok {
+			return html
+		}
+		return match // leave unresolved if component not found
+	})
 }
 
 // extractAssetTags separates CSS and JS tags from page content so they can be
@@ -1297,6 +1343,7 @@ type apiEndpoint struct {
 	PublicRead    bool   // GET allowed without auth even when RequiresAuth=true
 	RequiredRole  string // empty = any authenticated user, "admin" = admin only
 	RateLimit     int
+	CacheTTL      int    // response cache TTL in seconds (0 = no caching)
 	SecureCols    map[string]string // column → "hash" or "encrypt"
 	CORSOrigins   string            // comma-separated allowed origins, "*" for any
 	CORSMethods   string            // comma-separated allowed methods
@@ -1491,25 +1538,57 @@ func (h *Handler) DynamicAPI(w http.ResponseWriter, r *http.Request) {
 
 	switch r.Method {
 	case http.MethodGet:
-		if rowID != "" {
-			h.apiGetOne(w, r, siteDB.Reader(), physTable, rowID, ep, rc)
+		// Response caching for GET requests when cache_ttl is configured.
+		if ep.CacheTTL > 0 && h.apiCache != nil {
+			cacheKey := formatCacheKey(site.ID, ep.TableName, r.URL.Path, r.URL.RawQuery)
+			if body, status, ok := h.apiCache.get(cacheKey); ok {
+				w.Header().Set("Content-Type", "application/json")
+				w.Header().Set("X-Cache", "HIT")
+				w.WriteHeader(status)
+				w.Write(body)
+				return
+			}
+			// Cache miss — use a response recorder to capture the response.
+			rec := &responseRecorder{ResponseWriter: w, statusCode: http.StatusOK}
+			if rowID != "" {
+				h.apiGetOne(rec, r, siteDB.Reader(), physTable, rowID, ep, rc)
+			} else {
+				h.apiList(rec, r, siteDB.Reader(), physTable, ep, rc)
+			}
+			if rec.statusCode == http.StatusOK && len(rec.body) > 0 {
+				h.apiCache.set(cacheKey, rec.body, rec.statusCode, time.Duration(ep.CacheTTL)*time.Second)
+			}
+			w.Header().Set("X-Cache", "MISS")
 		} else {
-			h.apiList(w, r, siteDB.Reader(), physTable, ep, rc)
+			if rowID != "" {
+				h.apiGetOne(w, r, siteDB.Reader(), physTable, rowID, ep, rc)
+			} else {
+				h.apiList(w, r, siteDB.Reader(), physTable, ep, rc)
+			}
 		}
 	case http.MethodPost:
 		h.apiInsert(w, r, siteDB.Writer(), physTable, ep, site.ID, endpointPath, rc)
+		if h.apiCache != nil {
+			h.apiCache.invalidateTable(site.ID, ep.TableName)
+		}
 	case http.MethodPut:
 		if rowID == "" {
 			writePublicError(w, http.StatusBadRequest, "ID required for PUT")
 			return
 		}
 		h.apiUpdate(w, r, siteDB.Writer(), physTable, rowID, ep, site.ID, endpointPath, rc)
+		if h.apiCache != nil {
+			h.apiCache.invalidateTable(site.ID, ep.TableName)
+		}
 	case http.MethodDelete:
 		if rowID == "" {
 			writePublicError(w, http.StatusBadRequest, "ID required for DELETE")
 			return
 		}
 		h.apiDelete(w, siteDB.Writer(), physTable, rowID, ep, site.ID, endpointPath, rc)
+		if h.apiCache != nil {
+			h.apiCache.invalidateTable(site.ID, ep.TableName)
+		}
 	default:
 		writePublicError(w, http.StatusMethodNotAllowed, "method not allowed")
 	}
@@ -1521,9 +1600,9 @@ func (h *Handler) loadEndpoint(siteDB *sql.DB, path string) (*apiEndpoint, error
 	var publicColsJSON, requiredRole, ownerColumn sql.NullString
 	var corsOrigins, corsMethods, corsHeaders sql.NullString
 	err := siteDB.QueryRow(
-		"SELECT id, path, table_name, methods, public_columns, requires_auth, public_read, required_role, rate_limit, COALESCE(cors_origins,''), COALESCE(cors_methods,''), COALESCE(cors_headers,''), COALESCE(owner_column,'') FROM ho_api_endpoints WHERE path = ?",
+		"SELECT id, path, table_name, methods, public_columns, requires_auth, public_read, required_role, rate_limit, COALESCE(cors_origins,''), COALESCE(cors_methods,''), COALESCE(cors_headers,''), COALESCE(owner_column,''), COALESCE(cache_ttl,0) FROM ho_api_endpoints WHERE path = ?",
 		path,
-	).Scan(&ep.ID, &ep.Path, &ep.TableName, &methodsJSON, &publicColsJSON, &ep.RequiresAuth, &ep.PublicRead, &requiredRole, &ep.RateLimit, &corsOrigins, &corsMethods, &corsHeaders, &ownerColumn)
+	).Scan(&ep.ID, &ep.Path, &ep.TableName, &methodsJSON, &publicColsJSON, &ep.RequiresAuth, &ep.PublicRead, &requiredRole, &ep.RateLimit, &corsOrigins, &corsMethods, &corsHeaders, &ownerColumn, &ep.CacheTTL)
 	if err != nil {
 		return nil, err
 	}

@@ -105,6 +105,10 @@ func buildToolSetForPlan(plan *Plan) map[string]bool {
 	if len(plan.ScheduledTasks) > 0 {
 		ts["manage_jobs"] = true
 	}
+	// Components when the plan includes reusable HTML blocks.
+	if len(plan.Components) > 0 {
+		ts["manage_components"] = true
+	}
 	// SEO when there are any public pages (even a 1-page site needs meta tags).
 	for _, pg := range plan.Pages {
 		if !pg.Auth {

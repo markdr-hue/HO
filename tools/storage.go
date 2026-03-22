@@ -19,6 +19,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/markdr-hue/HO/events"
 )
 
 const maxFileSize = 10 << 20 // 10 MB
@@ -442,6 +444,15 @@ func (t *FilesTool) executeSave(ctx *ToolContext, args map[string]interface{}) (
 	// Remind the LLM to wire page-scope assets into the page's assets array.
 	if scope == "page" {
 		resultData["reminder"] = fmt.Sprintf("Page-scope asset saved. Add '%s' to the page's assets array via manage_pages.", filename)
+	}
+
+	// Publish file.uploaded event for action/webhook chains.
+	if ctx.Bus != nil {
+		ctx.Bus.Publish(events.NewEvent(events.EventFileUploaded, ctx.SiteID, map[string]interface{}{
+			"filename": filename,
+			"storage":  cfg.dirName,
+			"size":     len(fileData),
+		}))
 	}
 
 	return &Result{Success: true, Data: resultData}, nil

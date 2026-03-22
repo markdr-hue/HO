@@ -29,7 +29,7 @@ type Deps struct {
 
 // RegisterRoutes mounts all public site routes on the given router.
 func RegisterRoutes(r chi.Router, deps *Deps) {
-	h := &Handler{deps: deps}
+	h := &Handler{deps: deps, apiCache: newAPICache()}
 
 	// All public routes go through SiteResolver which looks up the
 	// site from the Host header and injects it into context.

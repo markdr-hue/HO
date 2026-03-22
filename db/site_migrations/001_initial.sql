@@ -148,6 +148,7 @@ CREATE TABLE IF NOT EXISTS ho_api_endpoints (
     cors_methods TEXT DEFAULT '',
     cors_headers TEXT DEFAULT '',
     owner_column TEXT DEFAULT NULL,
+    cache_ttl INTEGER DEFAULT 0,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -281,6 +282,16 @@ CREATE TABLE IF NOT EXISTS ho_activity_log (
 
 CREATE INDEX IF NOT EXISTS idx_ho_activity_log_date ON ho_activity_log(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_ho_activity_log_type ON ho_activity_log(event_type, created_at DESC);
+
+-- Reusable HTML components (included in pages via {{include:name}} syntax)
+CREATE TABLE IF NOT EXISTS ho_components (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE,
+    content TEXT NOT NULL DEFAULT '',
+    description TEXT DEFAULT '',
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
 
 -- Approval rules
 CREATE TABLE IF NOT EXISTS ho_approval_rules (

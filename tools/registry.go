@@ -42,6 +42,7 @@ var ChatToolSet = map[string]bool{
 	"manage_actions":       true,
 	"manage_memory":        true,
 	"manage_testing":       true,
+	"manage_components":    true,
 	"manage_plan":          true,
 }
 

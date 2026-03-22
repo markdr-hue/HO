@@ -53,6 +53,13 @@ type Server struct {
 	adminRouter  chi.Router
 	publicRouter chi.Router
 	deps         *ServerDeps
+	wsHub        events.WSBroadcaster
+}
+
+// WSBroadcaster returns the WebSocket broadcaster, allowing external components
+// (e.g. the Actions Runner) to push messages to connected WS clients.
+func (s *Server) WSBroadcaster() events.WSBroadcaster {
+	return s.wsHub
 }
 
 // New creates and configures both routers.
@@ -112,11 +119,14 @@ func New(deps *ServerDeps) *Server {
 	s.publicRouter.Use(publicRateLimiter.Handler)
 	s.publicRouter.Use(middleware.SecurityHeaders)
 
+	hub := public.NewWSHub()
+	s.wsHub = hub
+
 	publicDeps := &public.Deps{
 		DB:            deps.DB,
 		SiteDBManager: deps.SiteDBManager,
 		Bus:           deps.Bus,
-		WSHub:         public.NewWSHub(),
+		WSHub:         hub,
 		LLMRegistry:   deps.LLMRegistry,
 		Encryptor:     deps.Encryptor,
 		JWTManager:    deps.JWTManager,
