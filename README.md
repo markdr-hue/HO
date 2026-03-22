@@ -237,8 +237,8 @@ The admin panel runs on port **5001**. If your server is publicly accessible, bl
 ## Warning
 
 - This is for **testing and experimentation**. Not production. Probably.
-- There will be errors, trust me
-- HO is not responsible for unemployment
+- There will be errors, trust me.
+- HO is not responsible for unemployment.
 
 ---
 
@@ -263,10 +263,10 @@ These projects embody the same spirit HO strives for: powerful things should be 
 
 ## About Me
 
-- Full-time single dad of 3 with a full-time job to match that
-- If you have mental problems try to seek help. Don't suffer in silence
-- Be yourself, don't let anyone decide what to do or think
-- No need to idolize people or companies, most of them are clueless
+- Full-time single dad of 3 with a full-time job to match that.
+- If you have mental problems try to seek help. Don't suffer in silence.
+- Be yourself, don't let anyone decide what to do or think.
+- No need to idolize 'succesful' people, politicians or companies, most of them are clueless.
 
 ---
 
