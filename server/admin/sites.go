@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/go-chi/chi/v5"
+	hocdn "github.com/markdr-hue/HO/caddy"
 	"github.com/markdr-hue/HO/db/models"
 	"github.com/markdr-hue/HO/events"
 )
@@ -324,4 +325,23 @@ func (h *SitesHandler) ToggleStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, site)
+}
+
+// ValidateDomain checks if a domain is properly configured for HTTPS.
+// Returns the validation result with any warnings or errors.
+func (h *SitesHandler) ValidateDomain(w http.ResponseWriter, r *http.Request) {
+	domain := r.URL.Query().Get("domain")
+	if domain == "" {
+		writeError(w, http.StatusBadRequest, "domain query parameter is required")
+		return
+	}
+
+	check := hocdn.ValidateDomain(domain)
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"domain":   check.Domain,
+		"valid":    check.Valid,
+		"warnings": check.Warnings,
+		"error":    check.Error,
+		"message":  check.FormatCheckResult(),
+	})
 }

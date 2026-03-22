@@ -92,6 +92,7 @@ func RegisterRoutes(r chi.Router, deps *Deps, adminFS fs.FS) {
 			r.Get("/tools", toolsH.List)
 			r.Get("/users", users.List)
 			r.Get("/system/status", system.Status)
+			r.Get("/domain/validate", sites.ValidateDomain)
 			r.Get("/events/stream", system.EventStream)
 			r.Get("/questions", questions.List)
 			r.Get("/settings", settings.Get)

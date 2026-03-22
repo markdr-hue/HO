@@ -36,6 +36,25 @@ func (m *CaddyManager) buildConfig() ([]byte, error) {
 		}
 
 		domain := *site.Domain
+
+		// Pre-validate the domain before adding to Caddy config.
+		check := ValidateDomain(domain)
+		if !check.Valid {
+			m.logger.Warn("skipping domain with configuration problem",
+				"site_id", site.ID,
+				"domain", domain,
+				"problem", check.Error,
+			)
+			continue
+		}
+		for _, w := range check.Warnings {
+			m.logger.Warn("domain warning",
+				"site_id", site.ID,
+				"domain", domain,
+				"warning", w,
+			)
+		}
+
 		upstream := fmt.Sprintf("localhost:%d", m.config.PublicPort)
 
 		route := map[string]interface{}{
@@ -57,7 +76,7 @@ func (m *CaddyManager) buildConfig() ([]byte, error) {
 		}
 
 		siteRoutes = append(siteRoutes, route)
-		m.logger.Debug("added site route", "domain", domain, "upstream", upstream, "site_id", site.ID)
+		m.logger.Info("added site route", "domain", domain, "site_id", site.ID)
 	}
 
 	// Public HTTPS server - handles all site domains

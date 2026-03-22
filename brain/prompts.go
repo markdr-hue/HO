@@ -591,6 +591,7 @@ You may add libraries during BUILD even if not listed in the plan — use your j
 ### Pages
 %s%s
 - For complex interactivity, create a page-scope .js file and list it in the page's assets array. Small inline <script> tags are fine for simple interactions (toggles, counters, etc.).
+- **CRITICAL**: After saving a page-scope .js file, IMMEDIATELY call manage_pages to set that page's assets array (e.g. assets='["game.js"]'). This is the #1 missed step.
 
 `, pageChrome, containerHint))
 			b.WriteString(platformRules)
@@ -598,7 +599,7 @@ You may add libraries during BUILD even if not listed in the plan — use your j
 			// Full guidance for multi-page apps.
 			b.WriteString(fmt.Sprintf(`
 ### Pages
-For each page: (a) if needed, patch the global CSS file to add page-specific classes, (b) create HTML with manage_pages (pure HTML structure), (c) create its page-scope .js file for complex logic, (d) set assets array to include the .js filename. Small inline <script> tags are fine for simple interactions — use your judgement on when a separate file is warranted.
+For each page: (a) if needed, patch the global CSS file to add page-specific classes, (b) create HTML with manage_pages (pure HTML structure), (c) create its page-scope .js file for complex logic, (d) IMMEDIATELY set assets array to include the .js filename via manage_pages(assets='["filename.js"]'). This step is CRITICAL — do not skip it. Small inline <script> tags are fine for simple interactions — use your judgement on when a separate file is warranted.
 - Before building each page, re-read that page's plan entry (sections, endpoints, notes). Sections describe *what content goes there* — adapt the visual layout to fit the design system. Do not carry layout assumptions from the previous page.
 - Page JS must use the EXACT function/method names from global JS files. The system injects the API reference after each global JS save — follow it.
 %s

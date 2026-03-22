@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -493,6 +494,12 @@ func (w *PipelineWorker) runValidate(ctx context.Context) (PipelineStage, error)
 		return StageComplete, nil
 	}
 
+	// Auto-wire page-scope assets before validation to fix the most common
+	// BUILD omission (LLM creates JS files but forgets to set the assets array).
+	if wired := autoWirePageAssets(db, plan, w.logger); wired > 0 {
+		w.publishBrainMessage(fmt.Sprintf("Auto-wired JS assets to %d page(s)", wired))
+	}
+
 	issues := validateBuild(db, plan)
 
 	// Functional validation: HTTP-check pages and endpoints.
@@ -892,6 +899,116 @@ func validatePageEndpointJS(db *sql.DB, plan *Plan) []string {
 		}
 	}
 	return issues
+}
+
+// autoWirePageAssets deterministically wires page-scope JS/CSS assets to pages
+// that declare endpoints but have no assets set. This fixes the most common
+// BUILD-stage omission without relying on LLM fix-up.
+func autoWirePageAssets(db *sql.DB, plan *Plan, logger *slog.Logger) int {
+	// 1. Collect pages that need wiring: have endpoints but NULL/empty assets.
+	type needsWire struct {
+		path string
+	}
+	var unwired []needsWire
+	for _, pg := range plan.Pages {
+		if len(pg.Endpoints) == 0 {
+			continue
+		}
+		var assetsJSON sql.NullString
+		db.QueryRow("SELECT assets FROM ho_pages WHERE path = ? AND is_deleted = 0", pg.Path).Scan(&assetsJSON)
+		if !assetsJSON.Valid || assetsJSON.String == "" || assetsJSON.String == "[]" {
+			unwired = append(unwired, needsWire{path: pg.Path})
+		}
+	}
+	if len(unwired) == 0 {
+		return 0
+	}
+
+	// 2. Collect all page-scope asset files.
+	rows, err := db.Query("SELECT filename FROM ho_assets WHERE scope = 'page' AND (filename LIKE '%.js' OR filename LIKE '%.css')")
+	if err != nil {
+		logger.Warn("autoWirePageAssets: query failed", "error", err)
+		return 0
+	}
+	defer rows.Close()
+	var pageFiles []string
+	for rows.Next() {
+		var fn string
+		if rows.Scan(&fn) == nil {
+			pageFiles = append(pageFiles, fn)
+		}
+	}
+	if len(pageFiles) == 0 {
+		return 0
+	}
+
+	// 3. Match files to pages.
+	// For single unwired page: wire everything to it.
+	// For multiple: match by path slug, then assign unmatched to all.
+	wiring := make(map[string][]string) // path → filenames
+
+	if len(unwired) == 1 {
+		wiring[unwired[0].path] = pageFiles
+	} else {
+		matched := make(map[string]bool) // track which files got matched
+		for _, uw := range unwired {
+			slug := strings.TrimPrefix(uw.path, "/")
+			slug = strings.ReplaceAll(slug, "/", "-")
+			if slug == "" {
+				slug = "index"
+			}
+			// Remove :param segments for matching
+			parts := strings.Split(slug, "-")
+			var cleanParts []string
+			for _, p := range parts {
+				if !strings.HasPrefix(p, ":") {
+					cleanParts = append(cleanParts, p)
+				}
+			}
+			slug = strings.Join(cleanParts, "-")
+
+			for _, fn := range pageFiles {
+				base := strings.TrimSuffix(fn, ".js")
+				base = strings.TrimSuffix(base, ".css")
+				if slug != "" && (strings.HasPrefix(base, slug) || strings.HasPrefix(slug, base)) {
+					wiring[uw.path] = append(wiring[uw.path], fn)
+					matched[fn] = true
+				}
+			}
+		}
+
+		// Collect unmatched files and assign them to all still-unwired pages.
+		var unmatched []string
+		for _, fn := range pageFiles {
+			if !matched[fn] {
+				unmatched = append(unmatched, fn)
+			}
+		}
+		if len(unmatched) > 0 {
+			for _, uw := range unwired {
+				if len(wiring[uw.path]) == 0 {
+					wiring[uw.path] = unmatched
+				}
+			}
+		}
+	}
+
+	// 4. Write the wiring to the database.
+	wired := 0
+	for path, files := range wiring {
+		assetsJSON, err := json.Marshal(files)
+		if err != nil {
+			continue
+		}
+		_, err = db.Exec("UPDATE ho_pages SET assets = ?, updated_at = CURRENT_TIMESTAMP WHERE path = ? AND is_deleted = 0", string(assetsJSON), path)
+		if err != nil {
+			logger.Warn("autoWirePageAssets: update failed", "path", path, "error", err)
+			continue
+		}
+		logger.Info("auto-wired page assets", "path", path, "assets", files)
+		wired++
+	}
+	return wired
 }
 
 func validateCSSResponsive(db *sql.DB, plan *Plan) []string {

@@ -6,15 +6,19 @@
 package caddy
 
 import (
+	"crypto/tls"
 	"database/sql"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"sync"
+	"time"
 
 	caddycmd "github.com/caddyserver/caddy/v2"
 	_ "github.com/caddyserver/caddy/v2/modules/standard"
 
 	"github.com/markdr-hue/HO/config"
+	"github.com/markdr-hue/HO/db/models"
 	"github.com/markdr-hue/HO/events"
 )
 
@@ -50,6 +54,9 @@ func (m *CaddyManager) Start() error {
 		return nil
 	}
 
+	// Redirect Caddy's internal logs through our structured logger.
+	RedirectCaddyLogs(m.logger)
+
 	cfgJSON, err := m.buildConfig()
 	if err != nil {
 		return fmt.Errorf("building caddy config: %w", err)
@@ -64,6 +71,11 @@ func (m *CaddyManager) Start() error {
 
 	m.running = true
 	m.logger.Info("Caddy started successfully")
+
+	// Run HTTPS health check in background after a delay to give Caddy
+	// time to obtain certificates.
+	go m.checkHTTPSHealth(10 * time.Second)
+
 	return nil
 }
 
@@ -116,6 +128,10 @@ func (m *CaddyManager) Reload() error {
 	}
 
 	m.logger.Info("Caddy reloaded successfully")
+
+	// Check HTTPS health after reload.
+	go m.checkHTTPSHealth(15 * time.Second)
+
 	return nil
 }
 
@@ -135,4 +151,70 @@ func (m *CaddyManager) SubscribeToEvents(bus *events.Bus) {
 	bus.Subscribe(events.EventSiteDeleted, reloadHandler)
 
 	m.logger.Info("subscribed to site events for auto-reload")
+}
+
+// checkHTTPSHealth waits for the given delay, then tests HTTPS connectivity
+// for every active site with a domain. Results are logged as clear,
+// actionable messages.
+func (m *CaddyManager) checkHTTPSHealth(delay time.Duration) {
+	time.Sleep(delay)
+
+	sites, err := models.ListActiveSites(m.db)
+	if err != nil {
+		return
+	}
+
+	// HTTP client that accepts any cert (we just want to know if TLS handshake works).
+	client := &http.Client{
+		Timeout: 10 * time.Second,
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		},
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse // don't follow redirects
+		},
+	}
+
+	for _, site := range sites {
+		if site.Domain == nil || *site.Domain == "" {
+			continue
+		}
+		domain := *site.Domain
+
+		url := fmt.Sprintf("https://%s/", domain)
+		resp, err := client.Get(url)
+		if err != nil {
+			m.logger.Warn("HTTPS is not working for this domain",
+				"domain", domain,
+				"site_id", site.ID,
+				"help", diagnoseHTTPSError(err, domain),
+			)
+			continue
+		}
+		resp.Body.Close()
+
+		m.logger.Info("HTTPS is working",
+			"domain", domain,
+			"site_id", site.ID,
+			"status", resp.StatusCode,
+		)
+	}
+}
+
+// diagnoseHTTPSError returns a plain-English explanation of why HTTPS failed.
+func diagnoseHTTPSError(err error, domain string) string {
+	msg := err.Error()
+
+	switch {
+	case containsAny(msg, "no such host", "server mismatch"):
+		return fmt.Sprintf("DNS is not pointing '%s' to this server. Update your DNS A record to point to this server's public IP address", domain)
+	case containsAny(msg, "connection refused"):
+		return fmt.Sprintf("port 443 is not reachable on '%s'. Make sure the port is open in your firewall and no other program is using it", domain)
+	case containsAny(msg, "timeout", "deadline exceeded"):
+		return fmt.Sprintf("connection to '%s' timed out. The domain may not point to this server, or a firewall is blocking port 443", domain)
+	case containsAny(msg, "certificate"):
+		return fmt.Sprintf("TLS certificate problem for '%s'. Caddy may still be obtaining the certificate from Let's Encrypt (this can take a few minutes). If this persists, check that ports 80 and 443 are open", domain)
+	default:
+		return fmt.Sprintf("could not connect to '%s' via HTTPS: %v", domain, err)
+	}
 }
