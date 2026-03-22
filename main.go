@@ -73,7 +73,7 @@ func printBanner(cfg *config.Config) {
    https://letsencrypt.org
 
    Created by Mark Durlinger
-   https://github.com/markdr-hue/HO  (MIT License)
+   https://github.com/markdr-hue/HO (MIT License)
    %s
 
 `, cyan, reset, reset, reset, dim, Version, reset,

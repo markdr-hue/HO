@@ -612,6 +612,10 @@ For each page: (a) if needed, patch the global CSS file to add page-specific cla
 - **Auth field names**: The register/login body must use the EXACT column names from the auth endpoint config. If username_column="email", send {"email": "...", "password": "..."} — NOT {"username": "..."}. The server matches field names to column names.
 - **API patterns**: See the manage_endpoints guide above for response shapes, auth headers, and frontend fetch patterns. Filtering: ?col=val, ?col__like=, ?col__gt=, ?q=term. Sorting: ?sort=col&order=asc|desc. Column selection: ?fields=col1,col2. The filters=[{...}] syntax is for tools only, never for frontend. Only sort by columns that exist — tables auto-add "id" and "created_at" (NOT "updated_at"). Do NOT use "order_direction" — the correct param names are "order" or "direction".
 - **LLM endpoints**: POST /api/{path}/chat for SSE streaming (parse event "token" → data.text, NOT data.content), POST /api/{path}/complete for full JSON response (use response.content, NOT .text). Check stop_reason — "max_tokens" means truncated. For generated HTML: use innerHTML. For generated data: JSON.parse(response.content).
+- **WebSocket multiplayer**: Connect with new WebSocket(ws(s)://host/api/{path}/ws?room=X). CRITICAL: the server sends two kinds of messages you MUST handle separately:
+  (1) System messages have a _type field: {_type:"join", _sender:"UUID", _clients:N} or {_type:"leave",...}. Use _clients to track player count.
+  (2) User messages have whatever fields the sender included plus _sender:"UUID" injected by the server. Your own sends are NOT echoed back (update UI optimistically).
+  For multiplayer games: on ws.onmessage, first check if msg._type exists (system message) or msg.type (user message). For matchmaking/lobbies, use the _clients count from system join messages to know when enough players are connected. When a user join message arrives from another player, add them to the player list. Always send your own player info as a user message after connecting so other players can see you.
 
 `, pageChrome))
 			b.WriteString(platformRules)

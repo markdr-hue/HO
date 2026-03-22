@@ -37,7 +37,11 @@ func (t *EndpointsTool) Guide() string {
 - **create_api**: CRUD REST. GET /api/{path} (list: {data, count, limit, offset}), GET /{id}, POST, PUT, DELETE. Filtering: ?col=val, ?col__like=, ?col__gt=, ?q=. Column selection: ?fields=col1,col2 (returns only requested columns + id).
 - **create_auth**: JWT auth. POST /api/{path}/login, /register -> {token}. GET /api/{path}/me -> user. Bearer token required.
 - **create_llm**: AI endpoint with TWO routes. POST /api/{path}/chat streams SSE tokens (for chatbots/assistants). POST /api/{path}/complete returns full JSON {content, model, usage, stop_reason} (for content generators, code generators, classifiers). Choose the route based on the use case — use /chat when tokens should appear in real time, use /complete when you need the full response before rendering or processing it. Params: system_prompt (required), max_tokens (default 4096; use 8192+ for code generation), temperature (default 0.7), max_history (default 20), rate_limit (requests/min/IP, default 10), requires_auth, cors_origins.
-- **create_websocket**: Bidirectional relay. Connect: ws(s)://host/api/{path}/ws?room=X. Echo suppression: update UI optimistically after send. Server broadcasts {_type:"join"/"leave", _sender:"UUID"}.
+- **create_websocket**: Bidirectional relay. Connect: ws(s)://host/api/{path}/ws?room=X. The server sends TWO kinds of messages that your JS must handle separately:
+  1. **System messages** (from the server): have _type field. {_type:"join", _sender:"UUID", _clients:N} when someone joins, {_type:"leave", _sender:"UUID", _clients:N} when someone leaves. Use _clients to know how many are connected.
+  2. **User messages** (from other clients): have whatever fields the sender included, plus _sender:"UUID" injected by the server.
+  **Echo suppression**: your own messages are NOT sent back to you. Update UI optimistically after send. Only incoming messages are from OTHER clients.
+  **Multiplayer pattern**: on connect, send {type:"join", playerId:"...", name:"..."}. On receiving messages, check if msg._type exists (system) vs msg.type (user). For matchmaking, use _clients count from system join messages to know when enough players are connected.
 - **create_stream**: SSE. new EventSource('/api/{path}/stream').
 - **create_upload**: Multipart POST /api/{path}/upload -> {url, filename, size, type}. Optional table_name auto-persists uploads.
 - **create_llm does NOT provide CRUD**. If a page needs data listing AND AI features, create BOTH a create_api (for CRUD) and a create_llm (for AI chat/completion).
