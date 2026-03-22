@@ -6,7 +6,7 @@
 
 HO autonomously builds, deploys, and monitors advanced web(sites/apps/games).
 
-No Docker. No npm. No database server. No webserver. No build steps. Just run it.
+AI should be accessible. We believe HO can be used by anyone, no skills required. 
 
 
 ![HO Screenshot 1](readme_assets/screen_1.jpg)
