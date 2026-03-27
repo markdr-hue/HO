@@ -36,7 +36,7 @@ import (
 	"github.com/markdr-hue/HO/webhooks"
 )
 
-var Version = "0.4.1"
+var Version = "0.1.0"
 
 func printBanner(cfg *config.Config) {
 

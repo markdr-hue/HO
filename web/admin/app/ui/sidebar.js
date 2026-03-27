@@ -22,7 +22,7 @@ export function createSidebar() {
   const nav = h('div', { className: 'sidebar__nav' });
   const footer = h('div', { className: 'sidebar__footer' });
 
-  const brandIcon = h('img', { src: '/ho_white.svg', className: 'sidebar__brand-img' });
+  const brandIcon = h('img', { src: theme.get() === 'light' ? '/ho_black.svg' : '/ho_white.svg', className: 'sidebar__brand-img' });
   const brand = h('div', { className: 'sidebar__brand' }, [
     brandIcon,
     h('span', { className: 'sidebar__brand-name' }, 'Humans. Out.'),
@@ -174,7 +174,8 @@ export function createSidebar() {
       innerHTML: icon(currentTheme === 'dark' ? 'sun' : 'moon'),
       title: `Switch to ${currentTheme === 'dark' ? 'light' : 'dark'} mode`,
       onClick: () => {
-        theme.toggle();
+        const next = theme.toggle();
+        brandIcon.src = next === 'light' ? '/ho_black.svg' : '/ho_white.svg';
         renderNav();
       },
     });
