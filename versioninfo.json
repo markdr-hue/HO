@@ -1,0 +1,40 @@
+{
+  "FixedFileInfo": {
+    "FileVersion": {
+      "Major": 0,
+      "Minor": 2,
+      "Patch": 0,
+      "Build": 0
+    },
+    "ProductVersion": {
+      "Major": 0,
+      "Minor": 2,
+      "Patch": 0,
+      "Build": 0
+    },
+    "FileFlagsMask": "3f",
+    "FileFlags": "",
+    "FileOS": "040004",
+    "FileType": "01",
+    "FileSubType": "00"
+  },
+  "StringFileInfo": {
+    "Comments": "",
+    "CompanyName": "Mark Durlinger",
+    "FileDescription": "HO",
+    "FileVersion": "v0.2.0",
+    "InternalName": "ho",
+    "LegalCopyright": "Copyright (c) Mark Durlinger. MIT License",
+    "OriginalFilename": "ho.exe",
+    "ProductName": "HO",
+    "ProductVersion": "v0.2.0"
+  },
+  "VarFileInfo": {
+    "Translation": {
+      "LangID": "0409",
+      "CharsetID": "04B0"
+    }
+  },
+  "IconPath": "ho.ico",
+  "ManifestPath": ""
+}

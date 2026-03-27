@@ -1,0 +1,39 @@
+# Binaries
+*.exe
+*.dll
+*.so
+*.dylib
+resource.syso
+
+# Database files
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+
+# Runtime data
+data/
+
+# Config with secrets (use config.example.json as template)
+config.json
+
+# Release archives
+release/*.tar.gz
+release/*.zip
+
+# IDE / editor
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Claude Code local settings
+.claude/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Go build cache
+vendor/
