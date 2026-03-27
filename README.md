@@ -1,13 +1,10 @@
 # HO (Humans. Out.)
 
-**Describe what you want. She builds it. Instantly hosted. All on your machine.**
+**You've never seen anything like her, promised.**
 
 HO will builds your webapps, sites and games from a simple description. No coding, no hosting providers, no monthly fees. Just tell her what you want.
 
-So simple your grandma could launch her multiplayer Bridge game before lunch.
-
-> ### See her in action
-> [From nothing to a live, self-hosted chatbot with attitude in 12 minutes](https://www.youtube.com/watch?v=zdmYUoBI8rQ)
+## See her in action
 
 ![HO Screenshot 1](readme_assets/screen_1.jpg)
 
