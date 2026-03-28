@@ -2,7 +2,7 @@
 
 **You've never seen anything like her, promised.**
 
-HO will builds your webapps, sites and games from a simple description. No coding, no hosting providers, no monthly fees. Just tell her what you want.
+HO will builds and hosts your advanced webapps, sites and games from a simple description. No coding, no hosting providers, no monthly fees. Just tell her what you want.
 
 ## See her in action
 
